@@ -19,7 +19,7 @@ client.once("ready", () => {
 });
 
 const greetingResponse = [
-  "Hey, I'm Luciver, keeping an eye on the Scopio hub so conversations stay sharp and useful.",
+  "Hey, I'm Luciver, keeping an eye on the Lumina hub so conversations stay sharp and useful.",
   "Need schedules, reminders, or quick updates? Drop me a line and I'll steady the flow.",
   "Before you dive in, a quick set of house notes:",
   "- Respect the people behind the screens; disagreements stay thoughtful.",
@@ -379,7 +379,7 @@ const finalizeVoiceSession = async (channelId) => {
   const participants = [...session.participants.values()].filter((participant) => participant.totalMs > 0);
   const participantCount = participants.length;
 
-  const header = `🎙️ Voice Session • ${session.channelName}`;
+  const header = `Voice session • ${session.channelName}`;
   const lines = [
     header,
     `• Duration: ${formatDuration(durationMs)} (${formatDateTime(session.startedAt)} → ${formatDateTime(now)})`,
@@ -618,7 +618,7 @@ const logTask = async (message, rawContent) => {
   });
 
   const confirmationParts = [
-    `Task logged for <@${assigneeId}>: ${taskDescription}.`,
+    `Task logged for <@${assigneeId}>: **${taskDescription}**.`,
     "I'll surface it in the weekly moderator digest."
   ];
   if (dueText) {
@@ -629,8 +629,8 @@ const logTask = async (message, rawContent) => {
 
   let dmStatus = "dm";
   const dmLines = [
-    "📝 Task assigned in Scopio",
-    `• Task: ${taskDescription}`,
+    "Lumina assignment update",
+    `• Task: **${taskDescription}**`,
     `• Assigned by: <@${message.author.id}>`,
     `• Channel: <#${message.channelId}>`
   ];
@@ -662,8 +662,8 @@ const logTask = async (message, rawContent) => {
 
   await postLogEntry(
     [
-      `📝 Task assigned to <@${assigneeId}>`,
-      `• Task: ${taskDescription}`,
+      `Task assigned to <@${assigneeId}>`,
+      `• Task: **${taskDescription}**`,
       dueText ? `• Expected by: ${dueText}` : null,
       `• Assigned by: <@${message.author.id}>`,
       `• Channel: <#${message.channelId}>`,
@@ -856,6 +856,181 @@ const parseReminderSchedule = (text) => {
   return { note, dueAt: scheduled.toMillis(), defaultedTime };
 };
 
+const resolveReminderAudience = async (message, targetToken, matchedUserId, matchedRoleId) => {
+  if (typeof targetToken !== "string") {
+    return { error: "I couldn't figure out who to remind." };
+  }
+
+  if (targetToken.toLowerCase() === "me") {
+    return {
+      type: "user",
+      id: message.author.id,
+      guildId: message.guild?.id ?? null,
+      displayLabel: `<@${message.author.id}>`,
+      logLabel: `<@${message.author.id}>`
+    };
+  }
+
+  if (targetToken.toLowerCase() === "@everyone") {
+    if (!message.guild) {
+      return { error: "@everyone reminders only work inside a server." };
+    }
+    return {
+      type: "everyone",
+      id: message.guild.id,
+      guildId: message.guild.id,
+      displayLabel: "everyone",
+      logLabel: "everyone"
+    };
+  }
+
+  if (matchedUserId) {
+    return {
+      type: "user",
+      id: matchedUserId,
+      guildId: message.guild?.id ?? null,
+      displayLabel: `<@${matchedUserId}>`,
+      logLabel: `<@${matchedUserId}>`
+    };
+  }
+
+  if (matchedRoleId) {
+    if (!message.guild) {
+      return { error: "I can only resolve roles inside a server." };
+    }
+
+    let role = message.guild.roles?.cache?.get(matchedRoleId) ?? null;
+    if (!role) {
+      try {
+        role = await message.guild.roles.fetch(matchedRoleId);
+      } catch (error) {
+        console.warn("Failed to fetch role for reminder audience", error);
+      }
+    }
+
+    if (!role) {
+      return { error: "I couldn't find that role." };
+    }
+
+    const roleName = role.name || `role ${matchedRoleId}`;
+    return {
+      type: "role",
+      id: role.id,
+      guildId: message.guild.id,
+      displayLabel: `${roleName} role`,
+      logLabel: `${roleName} role`
+    };
+  }
+
+  return { error: "I couldn't figure out who to remind." };
+};
+
+const ensureReminderAudience = (reminder) => {
+  if (reminder.audience) {
+    return reminder.audience;
+  }
+
+  if (reminder.targetId) {
+    const fallback = {
+      type: "user",
+      id: reminder.targetId,
+      guildId: reminder.guildId || null,
+      displayLabel: `<@${reminder.targetId}>`,
+      logLabel: `<@${reminder.targetId}>`
+    };
+    reminder.audience = fallback;
+    return fallback;
+  }
+
+  return null;
+};
+
+const describeReminderAudience = (reminder, options = {}) => {
+  const audience = ensureReminderAudience(reminder);
+  if (!audience) {
+    return "unknown recipients";
+  }
+
+  if (audience.type === "user") {
+    const memberSnapshot = options.memberActivity?.get?.(audience.id);
+    if (memberSnapshot?.tag) {
+      return `@${memberSnapshot.tag}`;
+    }
+    return audience.displayLabel || `<@${audience.id}>`;
+  }
+
+  if (audience.type === "role") {
+    return audience.displayLabel || "role recipients";
+  }
+
+  if (audience.type === "everyone") {
+    return "everyone";
+  }
+
+  return audience.displayLabel || "group recipients";
+};
+
+const collectReminderRecipients = async (audience) => {
+  if (!audience) {
+    return [];
+  }
+
+  if (audience.type === "user") {
+    try {
+      const user = await client.users.fetch(audience.id);
+      return user ? [user] : [];
+    } catch (error) {
+      console.warn("Failed to fetch user for reminder", error);
+      return [];
+    }
+  }
+
+  if (!audience.guildId) {
+    return [];
+  }
+
+  let guild;
+  try {
+    guild = await client.guilds.fetch(audience.guildId);
+  } catch (error) {
+    console.warn("Unable to fetch guild for reminder audience", error);
+    return [];
+  }
+
+  try {
+    await guild.members.fetch();
+  } catch (error) {
+    console.warn("Unable to fetch full member list for reminder audience", error);
+  }
+
+  if (audience.type === "everyone") {
+    const users = [];
+    guild.members.cache.forEach((member) => {
+      if (!member.user?.bot) {
+        users.push(member.user);
+      }
+    });
+    return users;
+  }
+
+  if (audience.type === "role") {
+    const role = guild.roles.cache.get(audience.id);
+    if (!role) {
+      return [];
+    }
+
+    const users = [];
+    role.members.forEach((member) => {
+      if (!member.user?.bot) {
+        users.push(member.user);
+      }
+    });
+    return users;
+  }
+
+  return [];
+};
+
 const formatDateTime = (timestamp) => {
   const dt = DateTime.fromMillis(timestamp).setZone(TARGET_TIMEZONE);
   const label = dt.offsetNameShort || dt.offsetNameLong || TARGET_TIMEZONE;
@@ -863,19 +1038,23 @@ const formatDateTime = (timestamp) => {
 };
 
 const logReminder = async (message, rawContent) => {
-  const match = rawContent.match(/remind\s+(me|<@!?(\d+)>)(?:\s+to)?\s+(.+)/i);
+  const match = rawContent.match(/remind\s+(me|@everyone|<@!?(\d+)>|<@&(\d+)>)(?:\s+to)?\s+(.+)/i);
   if (!match) {
     return false;
   }
 
-  const [, targetRaw, , remainder] = match;
+  const [, targetToken, matchedUserId, matchedRoleId, remainder] = match;
   const cleanReminder = remainder.trim();
   if (!cleanReminder) {
     await message.reply("Give me what to remind you about—try `Luciver remind me to review PR in 30m`." );
     return true;
   }
 
-  const targetId = targetRaw.toLowerCase() === "me" ? message.author.id : targetRaw.replace(/\D/g, "");
+  const audience = await resolveReminderAudience(message, targetToken, matchedUserId, matchedRoleId);
+  if (audience.error) {
+    await message.reply(audience.error);
+    return true;
+  }
 
   const schedule = parseReminderSchedule(cleanReminder);
   if (schedule.error) {
@@ -887,8 +1066,10 @@ const logReminder = async (message, rawContent) => {
   }
 
   reminderQueue.push({
-    id: `${Date.now()}-${targetId}`,
-    targetId,
+    id: `${Date.now()}-${audience.id}`,
+    audience,
+    targetId: audience.type === "user" ? audience.id : null,
+    guildId: audience.guildId || null,
     createdBy: message.author.id,
     note: schedule.note,
     channelId: message.channelId,
@@ -902,18 +1083,26 @@ const logReminder = async (message, rawContent) => {
     ? " I set that to 09:00 in the configured timezone—add a time if you need something different."
     : "";
 
-  await message.reply(`Reminder saved for <@${targetId}>: ${schedule.note}. I'll ping them around ${formatDateTime(schedule.dueAt)}.${defaultTimeHint}`);
+  const audienceNoun = audience.type === "user" ? "them" : audience.type === "everyone" ? "everyone" : "that group";
+  await message.reply(
+    `Reminder saved for ${audience.displayLabel}: ${schedule.note}. I'll DM ${audienceNoun} around ${formatDateTime(schedule.dueAt)}.${defaultTimeHint}`
+  );
+
+  const logMentionUsers = new Set([message.author.id]);
+  if (audience.type === "user") {
+    logMentionUsers.add(audience.id);
+  }
 
   await postLogEntry(
     [
-      `⏰ Reminder scheduled for <@${targetId}>`,
+      `Reminder scheduled for ${audience.logLabel}`,
       `• Note: ${schedule.note}`,
       `• Due: ${formatDateTime(schedule.dueAt)}`,
       schedule.defaultedTime ? "• Time detail: Defaulted to 09:00 (no explicit time provided)" : null,
       `• Requested by: <@${message.author.id}>`,
       `• Channel: <#${message.channelId}>`
     ].join("\n"),
-    { allowedMentions: { users: [targetId, message.author.id], roles: [] } }
+    { allowedMentions: { users: [...logMentionUsers], roles: [] } }
   );
   return true;
 };
@@ -994,11 +1183,7 @@ const shareStats = async (message) => {
     .sort((a, b) => a.dueAt - b.dueAt)[0];
 
   const nextReminderLabel = nextReminder
-    ? (() => {
-        const targetTag = memberActivity.get(nextReminder.targetId)?.tag;
-        const recipient = targetTag ? `@${targetTag}` : `user ${nextReminder.targetId}`;
-        return `${formatDateTime(nextReminder.dueAt)} for ${recipient}`;
-      })()
+    ? `${formatDateTime(nextReminder.dueAt)} for ${describeReminderAudience(nextReminder, { memberActivity })}`
     : "None queued";
 
   const operationsLines = [
@@ -1078,58 +1263,95 @@ const handleLuciverCue = async (message, rawContent) => {
 };
 
 const deliverReminder = async (reminder) => {
-  const { targetId, note, channelId, createdBy, dueAt, defaultedTime } = reminder;
+  const audience = ensureReminderAudience(reminder);
+  const { note, channelId, createdBy, dueAt, defaultedTime } = reminder;
   const authorMention = `<@${createdBy}>`;
+  const audienceLabel = audience?.displayLabel || "the target";
   const reminderLines = [
-    "🔔 Time to follow up!",
-    `• Note: ${note}`,
-    `• Scheduled for: ${formatDateTime(dueAt)}`,
-    `• Requested by: ${authorMention}`
+    `Reminder checkpoint for ${audienceLabel}`,
+    `Note: **${note}**`,
+    `Scheduled for: ${formatDateTime(dueAt)}`,
+    `Requested by: ${authorMention}`
   ];
   const reminderText = reminderLines.join("\n");
-  let deliveryMethod = "failed";
 
-  try {
-    const user = await client.users.fetch(targetId);
-    await user.send(reminderText);
-    deliveryMethod = "dm";
-  } catch (error) {
-    console.warn("Failed to DM reminder target, falling back to channel", error);
-  }
+  const recipients = await collectReminderRecipients(audience);
+  const successes = [];
+  const failures = [];
 
-  if (deliveryMethod !== "dm") {
+  for (const user of recipients) {
     try {
-      const channel = await client.channels.fetch(channelId);
-      if (channel?.isTextBased()) {
-        await channel.send({ content: `<@${targetId}> ${reminderText}` });
-        deliveryMethod = "channel";
-      }
+      await user.send(reminderText);
+      successes.push(user.id);
     } catch (error) {
-      console.error("Failed to post reminder to channel", error);
+      console.warn("Failed to DM reminder recipient", error);
+      failures.push(user.id);
     }
   }
 
-  const deliveryLabel = deliveryMethod === "dm"
-    ? "Direct Message"
-    : deliveryMethod === "channel"
-      ? "Fallback Channel"
-      : "Failed";
+  let fallbackUsed = null;
+  if (!successes.length && audience?.type === "user" && channelId) {
+    try {
+      const channel = await client.channels.fetch(channelId);
+      if (channel?.isTextBased()) {
+        await channel.send({
+          content: reminderText,
+          allowedMentions: {
+            users: [audience.id, createdBy].filter(Boolean),
+            roles: []
+          }
+        });
+        fallbackUsed = "channel";
+      }
+    } catch (error) {
+      console.error("Failed to post reminder to original channel", error);
+    }
+  }
 
-  await postLogEntry(
-    [
-      `🔔 Reminder delivered for <@${targetId}>`,
-      `• Note: ${note}`,
-      `• Scheduled for: ${formatDateTime(dueAt)}`,
-      defaultedTime ? "• Time detail: Defaulted to 09:00 (no explicit time provided)" : null,
-      `• Delivery: ${deliveryLabel}`,
-      `• Requested by: <@${createdBy}>`,
-      `• Original channel: <#${channelId}>`,
-      `• Sent at: ${formatDateTime(Date.now())}`
-    ].join("\n"),
-    { allowedMentions: { users: [targetId, createdBy], roles: [] } }
-  );
+  const totalRecipients = recipients.length;
+  let deliveryState = "failed";
+  let deliveryLabel = totalRecipients ? "Direct Messages failed" : "No recipients";
 
-  return deliveryMethod;
+  if (totalRecipients && successes.length === totalRecipients) {
+    deliveryState = "dm";
+    deliveryLabel = `Direct Messages (${successes.length})`;
+  } else if (successes.length && totalRecipients) {
+    deliveryState = "partial";
+    deliveryLabel = `Partial delivery (${successes.length}/${totalRecipients})`;
+  }
+
+  if (fallbackUsed === "channel") {
+    deliveryState = "channel";
+    deliveryLabel = "Channel fallback";
+  }
+
+  const logLines = [
+    `Reminder delivered to ${describeReminderAudience(reminder)}`,
+    `• Note: ${note}`,
+    `• Scheduled for: ${formatDateTime(dueAt)}`,
+    defaultedTime ? "• Time detail: Defaulted to 09:00 (no explicit time provided)" : null,
+    `• Delivery: ${deliveryLabel}`,
+    totalRecipients ? `• Recipients reached: ${successes.length}/${totalRecipients}` : null,
+    failures.length && totalRecipients ? `• DM failures: ${failures.length}` : null,
+    fallbackUsed === "channel" ? "• Fallback: Posted in original channel" : null,
+    `• Requested by: <@${createdBy}>`,
+    `• Original channel: <#${channelId}>`,
+    `• Sent at: ${formatDateTime(Date.now())}`
+  ].filter(Boolean).join("\n");
+
+  const logMentionUsers = new Set([createdBy]);
+  if (audience?.type === "user") {
+    logMentionUsers.add(audience.id);
+  }
+
+  await postLogEntry(logLines, {
+    allowedMentions: {
+      users: [...logMentionUsers],
+      roles: []
+    }
+  });
+
+  return deliveryState;
 };
 
 const processDueReminders = async () => {
@@ -1190,7 +1412,7 @@ const maybeSendTaskDigest = async () => {
     "",
     ...[...grouped.entries()].map(([assigneeId, tasks]) => {
       const taskLines = tasks
-        .map((task) => `  • ${task.details} (assigned ${relativeTime(task.createdAt)})`)
+        .map((task) => `  • **${task.details}** (assigned ${relativeTime(task.createdAt)})`)
         .join("\n");
       return `<@${assigneeId}>\n${taskLines}`;
     })
@@ -1201,7 +1423,7 @@ const maybeSendTaskDigest = async () => {
     await moderatorChannel.send({ content: digestText, allowedMentions: { users: [...grouped.keys()], roles: [] } });
     await postLogEntry(
       [
-        `📋 Weekly task digest shared`,
+        `Weekly task digest shared`,
         `• Posted to: ${moderatorChannel}`,
         `• Total assignees: ${grouped.size}`,
         `• Total tasks: ${openTasks.length}`,
@@ -1247,7 +1469,7 @@ const maybeSendStatsReport = async () => {
 
   await postLogEntry(
     [
-      `📊 Weekend pulse (${formatDateTime(Date.now())})`,
+      `Weekend pulse (${formatDateTime(Date.now())})`,
       `• Total tracked messages: ${totalMessages}`,
       `• Channels watched: ${channelActivity.size}`,
       roleSnapshot ? `• Role snapshot: ${roleSnapshot}` : null,
