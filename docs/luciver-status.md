@@ -20,6 +20,7 @@ Luciver is the Discord concierge for the Lumina dev server. It reacts to natural
 - **Greeting** – Responds with the welcome + code-of-conduct message when a user simply says `hi`, `hello`, or `luciver`.
 - **Message capture** – Tracks all guild messages in `channelActivity` to power `stats` output.
 - **Reminder engine** – Checks pending reminders every 30 seconds, DMs every targeted member at the scheduled time (supports @everyone and role fan-out), only falls back to the originating channel when a single-user DM fails, and records delivery in #luciver-log. Reminder confirmations and DMs include the configured timezone label so timestamps line up with human expectations, and default to 09:00 in that zone if you provide a date (or “tomorrow”) without a specific hour.
+- **Daily progress prompt** – Every evening at 7 PM (configured timezone) DMs everyone in the `bashers` role with “Uploaded today's progress?! If not, do it now!!” and posts the delivery record to #luciver-log.
 - **Weekly digest** – Each Sunday at 2 PM (configured timezone) lists all open assignments in the moderator channel and mirrors the post in #luciver-log (requires configuration).
 - **Weekend pulse** – Each Sunday at 6 PM (configured timezone) posts the top-channel activity snapshot and current headcounts in #luciver-log for quick review.
 - **Logging** – Every task creation, reminder creation, reminder delivery, and digest is echoed into the #luciver-log channel.

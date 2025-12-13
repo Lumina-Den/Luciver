@@ -33,6 +33,11 @@ const memberActivity = new Map();
 const taskBacklog = [];
 const reminderQueue = [];
 
+const DAILY_REMINDER_ROLE_NAME = "bashers";
+const DAILY_REMINDER_HOUR = 19; // 7 PM
+const DAILY_REMINDER_MINUTE = 0;
+const DAILY_REMINDER_MESSAGE = "Uploaded today's progress?! If not, do it now!!";
+
 const MODERATOR_CHANNEL_ID = process.env.MODERATOR_CHANNEL_ID;
 const LUCIVER_LOG_CHANNEL_ID = process.env.LUCIVER_LOG_CHANNEL_ID;
 const TRACKED_VOICE_CHANNEL_NAMES = new Set(["voice meeting", "weekly-bash-discussion"]);
@@ -53,6 +58,7 @@ const STATS_REPORT_TARGET_HOUR = 18; // 6 PM in configured timezone
 let lastTaskDigestSentAt = 0;
 let lastStatsReportSentAt = 0;
 let cachedLogChannel = null;
+let dailyRoleReminderTimeout = null;
 
 const recordChannelActivity = (message) => {
   if (!message.inGuild()) {
@@ -1037,6 +1043,108 @@ const formatDateTime = (timestamp) => {
   return `${dt.toLocaleString(DateTime.DATETIME_MED)} (${label})`;
 };
 
+const dispatchDailyRoleReminder = async () => {
+  const normalizedRoleName = DAILY_REMINDER_ROLE_NAME.trim().toLowerCase();
+  const targetedRoles = [];
+  const recipientMap = new Map();
+
+  for (const guild of client.guilds.cache.values()) {
+    let role = guild.roles.cache.find((entry) => typeof entry.name === "string" && entry.name.trim().toLowerCase() === normalizedRoleName) || null;
+
+    if (!role) {
+      try {
+        const roles = await guild.roles.fetch();
+        role = roles.find((entry) => typeof entry.name === "string" && entry.name.trim().toLowerCase() === normalizedRoleName) || null;
+      } catch (error) {
+        console.warn("Unable to fetch roles while preparing daily reminder", error);
+      }
+    }
+
+    if (!role) {
+      continue;
+    }
+
+    targetedRoles.push(`${role.name} (${guild.name})`);
+
+    try {
+      await guild.members.fetch();
+    } catch (error) {
+      console.warn("Unable to fetch members while preparing daily reminder", error);
+    }
+
+    role.members.forEach((member) => {
+      if (!member.user?.bot && !recipientMap.has(member.id)) {
+        recipientMap.set(member.id, member.user);
+      }
+    });
+  }
+
+  const recipients = [...recipientMap.values()];
+  let successes = 0;
+  const failures = [];
+
+  for (const user of recipients) {
+    try {
+      await user.send(DAILY_REMINDER_MESSAGE);
+      successes += 1;
+    } catch (error) {
+      console.warn("Failed to DM daily reminder recipient", error);
+      failures.push(user.id);
+    }
+  }
+
+  const attempts = recipients.length;
+  const nowLabel = formatDateTime(Date.now());
+  const logLines = [
+    "Daily reminder has been sent",
+    targetedRoles.length
+      ? `• Target role: ${targetedRoles.join(", ")}`
+      : `• Target role: "${DAILY_REMINDER_ROLE_NAME}" not found`,
+    `• Scheduled at: ${nowLabel}`,
+    `• Recipients reached: ${successes}/${attempts}`,
+    failures.length ? `• DM failures: ${failures.length}` : null
+  ].filter(Boolean).join("\n");
+
+  await postLogEntry(logLines, { allowedMentions: { users: [], roles: [] } });
+};
+
+const computeNextDailyRoleReminder = () => {
+  const now = DateTime.now().setZone(TARGET_TIMEZONE);
+  let next = now.set({
+    hour: DAILY_REMINDER_HOUR,
+    minute: DAILY_REMINDER_MINUTE,
+    second: 0,
+    millisecond: 0
+  });
+
+  if (next <= now) {
+    next = next.plus({ days: 1 });
+  }
+
+  return next;
+};
+
+const scheduleDailyRoleReminder = () => {
+  if (dailyRoleReminderTimeout) {
+    clearTimeout(dailyRoleReminderTimeout);
+    dailyRoleReminderTimeout = null;
+  }
+
+  const next = computeNextDailyRoleReminder();
+  const delay = Math.max(0, next.toMillis() - Date.now());
+
+  dailyRoleReminderTimeout = setTimeout(async () => {
+    dailyRoleReminderTimeout = null;
+    try {
+      await dispatchDailyRoleReminder();
+    } catch (error) {
+      console.error("Daily role reminder dispatch failed", error);
+    } finally {
+      scheduleDailyRoleReminder();
+    }
+  }, delay);
+};
+
 const logReminder = async (message, rawContent) => {
   const match = rawContent.match(/remind\s+(me|@everyone|<@!?(\d+)>|<@&(\d+)>)(?:\s+to)?\s+(.+)/i);
   if (!match) {
@@ -1483,6 +1591,8 @@ const maybeSendStatsReport = async () => {
 };
 
 const startSchedulers = () => {
+  scheduleDailyRoleReminder();
+
   setInterval(() => {
     processDueReminders().catch((error) => console.error("Reminder sweep failed", error));
   }, REMINDER_CHECK_INTERVAL_MS);
