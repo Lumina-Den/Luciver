@@ -2040,6 +2040,13 @@ const handleLuciverCue = async (message, rawContent) => {
     }
   }
 
+  if (/\breminders\b/.test(normalized)) {
+    const handled = await handleReminderAdminCommand(message, rawContent);
+    if (handled) {
+      return true;
+    }
+  }
+
   if (/\bassign\b/.test(normalized)) {
     const handled = await logTask(message, rawContent);
     if (handled) {
@@ -2154,6 +2161,98 @@ const deliverReminder = async (reminder) => {
   });
 
   return deliveryState;
+};
+
+const collectPendingReminders = () =>
+  reminderQueue
+    .filter((entry) => !entry.sentAt)
+    .sort((a, b) => a.dueAt - b.dueAt);
+
+const formatReminderAdminLine = (reminder, index) => {
+  const audienceLabel = describeReminderAudience(reminder, { memberActivity });
+  const requesterLabel = reminder.createdBy ? `<@${reminder.createdBy}>` : "unknown requester";
+  const createdAgo = reminder.createdAt ? relativeTime(reminder.createdAt) : "unknown";
+  const defaultFlag = reminder.defaultedTime ? " (default 09:00)" : "";
+  return `[#${index + 1}] ${audienceLabel} → ${reminder.note} (Due ${formatDateTime(reminder.dueAt)}${defaultFlag}, requested by ${requesterLabel}, queued ${createdAgo}, id ${reminder.id})`;
+};
+
+const handleReminderAdminCommand = async (message, rawContent) => {
+  if (!hasModeratorPrivileges(message)) {
+    await message.reply("Reminder admin commands are moderator-only.");
+    return true;
+  }
+
+  const deleteMatch = rawContent.match(/reminders?\s+delete\s+([^\s]+)/i);
+  if (!deleteMatch) {
+    const pending = collectPendingReminders();
+    if (!pending.length) {
+      await message.reply("No pending reminders right now.");
+      return true;
+    }
+
+    const limit = 10;
+    const lines = pending.slice(0, limit).map((reminder, index) => formatReminderAdminLine(reminder, index));
+    if (pending.length > limit) {
+      lines.push(`…and ${pending.length - limit} more pending reminders.`);
+    }
+
+    await message.reply(lines.join("\n"));
+    return true;
+  }
+
+  const tokenRaw = deleteMatch[1].trim();
+  const pending = collectPendingReminders();
+  if (!pending.length) {
+    await message.reply("No pending reminders right now.");
+    return true;
+  }
+
+  let target = null;
+  const token = tokenRaw.startsWith("#") ? tokenRaw.slice(1) : tokenRaw;
+  if (/^\d+$/.test(token)) {
+    const index = Number(token) - 1;
+    if (index >= 0 && index < pending.length) {
+      target = pending[index];
+    }
+  }
+
+  if (!target) {
+    target = pending.find((entry) => entry.id === tokenRaw || entry.id === token);
+  }
+
+  if (!target) {
+    await message.reply("I couldn't find a pending reminder matching that token. Use `Luciver reminders` to see the current list.");
+    return true;
+  }
+
+  const originalIndex = reminderQueue.indexOf(target);
+  if (originalIndex >= 0) {
+    reminderQueue.splice(originalIndex, 1);
+  }
+
+  const audienceLabel = describeReminderAudience(target, { memberActivity });
+  await message.reply(`Reminder cancelled: ${audienceLabel} → ${target.note} (ID ${target.id}).`);
+
+  const logMentionUsers = new Set([message.author.id]);
+  if (target.createdBy) {
+    logMentionUsers.add(target.createdBy);
+  }
+
+  await postLogEntry(
+    [
+      "Reminder cancelled",
+      `• Note: ${target.note}`,
+      `• Due: ${formatDateTime(target.dueAt)}`,
+      target.defaultedTime ? "• Time detail: Defaulted to 09:00 (no explicit time provided)" : null,
+      `• Audience: ${audienceLabel}`,
+      target.createdBy ? `• Originally requested by: <@${target.createdBy}>` : null,
+      `• Cancelled by: <@${message.author.id}>`,
+      `• Channel: <#${message.channelId}>`
+    ].filter(Boolean).join("\n"),
+    { allowedMentions: { users: [...logMentionUsers], roles: [] } }
+  );
+
+  return true;
 };
 
 const processDueReminders = async () => {
