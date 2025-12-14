@@ -1672,6 +1672,11 @@ const handleReachOutExcuse = async (message) => {
     return true;
   }
 
+  const loweredDetails = detailsText.toLowerCase();
+  if (/^(delete|remove)\b/.test(loweredDetails)) {
+    return false;
+  }
+
   recordReachOutReport(message, detailsText, submittedAt);
 
   const embed = buildReachOutEmbed(message, detailsText, submittedAt);
