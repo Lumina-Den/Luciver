@@ -34,7 +34,7 @@ const taskBacklog = [];
 const reminderQueue = [];
 
 const DAILY_REMINDER_ROLE_NAME = "bashers";
-const DAILY_REMINDER_HOUR = 19; // 7 PM
+const DAILY_REMINDER_HOUR = 20; // 8 PM
 const DAILY_REMINDER_MINUTE = 0;
 const DAILY_REMINDER_MESSAGE = "Uploaded today's progress?! If not, do it now!!";
 
