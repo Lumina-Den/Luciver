@@ -1230,42 +1230,37 @@ const handleReachOutExcuse = async (message) => {
     : "Moderators, new reach-out update.";
 
   let notifiedModerators = false;
+  let moderatorChannel = null;
 
-  if (MODERATOR_CHANNEL_ID && MODERATOR_CHANNEL_ID !== LUCIVER_LOG_CHANNEL_ID) {
+  if (MODERATOR_CHANNEL_ID) {
     try {
-      const moderatorChannel = await client.channels.fetch(MODERATOR_CHANNEL_ID);
-      if (moderatorChannel?.isTextBased()) {
+      moderatorChannel = await client.channels.fetch(MODERATOR_CHANNEL_ID);
+    } catch (error) {
+      console.error("Failed to fetch moderator channel for reach-out notice", error);
+    }
+
+    if (moderatorChannel?.isTextBased()) {
+      try {
         await moderatorChannel.send({
           content: noticeHeadline,
           embeds: [embed],
           allowedMentions
         });
         notifiedModerators = true;
+      } catch (error) {
+        console.error("Failed to post reach-out notice to moderator channel", error);
       }
-    } catch (error) {
-      console.error("Failed to post reach-out notice to moderator channel", error);
     }
   }
 
-  const logLines = [
-    noticeHeadline,
-    `• From: <@${message.author.id}>`,
-    `• Logged from: <#${message.channelId}>`,
-    `• Submitted: ${formatDateTime(submittedAt)}`,
-    `• Message Link: https://discord.com/channels/${message.guildId}/${message.channelId}/${message.id}`
-  ].join("\n");
+  if (!notifiedModerators) {
+    await message.reply(
+      "I couldn't reach the moderators channel for this notice. Please double-check my configuration or let them know directly."
+    );
+    return true;
+  }
 
-  await postLogEntry(logLines, {
-    embeds: [embed],
-    allowedMentions
-  });
-
-  const hasLogChannelConfigured = Boolean(LUCIVER_LOG_CHANNEL_ID);
-  await message.reply(
-    notifiedModerators || hasLogChannelConfigured
-      ? "Thanks for looping me in. I've shared this update with the moderators."
-      : "I couldn't find a configured moderator channel to broadcast this. Please double-check my settings."
-  );
+  await message.reply("Thanks for looping me in. I've shared this update with the moderators only.");
 
   return true;
 };

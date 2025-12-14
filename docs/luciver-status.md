@@ -11,7 +11,7 @@ Luciver is the Discord concierge for the Lumina dev server. It reacts to natural
 | `luciver assign @user <task>` | Luciver assign @Nova finish responsive tweaks | (Moderators only) logs the task, posts the record in #luciver-log, and queues it for the Sunday digest. |
 | `luciver remind me/<@user>/<@&role>/@everyone <note + time>` | Luciver remind @everyone prep release notes at 17:00 | Handles phrases like `in 20m`, `tomorrow 5pm`, `at 4:40am`, or `17 Dec 09:00`, schedules the reminder, confirms the ETA, and logs the entry for audit (defaults to 09:00 if you omit a time). Group targets fan out to direct messages for every member. |
 | `luciver stats` (also `status`, `pulse`) | Luciver stats | Summarises total traffic, top channels, top contributors, quiet channels, operations snapshot (tasks + reminders), and the Moderator / Others headcount. |
-| `@Luciver` inside `reach-out` | @Luciver I can't attend the 5 PM stand-up because of a client call. | Records the excuse, posts a reach-out notice (with moderator @mention + embed) into the configured moderator/log channels, and stores the excerpt for later stats. |
+| `@Luciver` inside `reach-out` | @Luciver I can't attend the 5 PM stand-up because of a client call. | Records the excuse, posts a reach-out notice (with moderator @mention + embed) into the dedicated moderator channel only, and stores the excerpt for later stats. |
 | *(any other message that includes the name)* | Luciver what can you do? | Falls back to the help embed so the user sees available actions. |
 
 > Tip: Mentioning the bot (`@Luciver help`) behaves the same as typing its name.
