@@ -9,7 +9,7 @@ Luciver is the Discord concierge for the Lumina dev server. It reacts to natural
 | `luciver help` | Luciver help | Posts the help embed with every available shortcut. |
 | `luciver ping #channel [note]` | Luciver ping #design and #frontend the above image with the note rough flow ready. | Forwards the message you replied to (or the last non-bot message when you say “above message”) into every tagged channel; attaches the author’s note if provided. |
 | `luciver assign @user <task>` | Luciver assign @Nova finish responsive tweaks | (Moderators only) logs the task, posts the record in #luciver-log, and queues it for the Sunday digest. |
-| `luciver delete/remove the above <n> messages` | Luciver delete the above 3 messages | (Moderators only) removes up to 20 recent, unpinned messages in the channel so sensitive chatter can be cleared quickly (skips anything older than 14 days). |
+| `luciver delete/remove …` | Luciver delete the above 3 messages; Luciver delete all messages from today up to 10am | (Moderators only) clears previous chatter by count (up to 20), wipes everything above the command, or targets a same-day window up to a given time (caps at 200 and skips anything older than 14 days). |
 | `luciver remind me/<@user>/<@&role>/@everyone <note + time>` | Luciver remind @everyone prep release notes at 17:00 | Handles phrases like `in 20m`, `tomorrow 5pm`, `at 4:40am`, or `17 Dec 09:00`, schedules the reminder, confirms the ETA, and logs the entry for audit (defaults to 09:00 if you omit a time). Group targets fan out to direct messages for every member. |
 | `luciver stats` (also `status`, `pulse`) | Luciver stats | Summarises total traffic, top channels, top contributors, quiet channels, operations snapshot (tasks + reminders), and the Moderator / Others headcount. |
 | `@Luciver` inside `reach-out` | @Luciver I can't attend the 5 PM stand-up because of a client call. | Records the excuse, posts a reach-out notice (with moderator @mention + embed) into the dedicated moderator channel only, and stores the excerpt for later stats. |
@@ -31,14 +31,6 @@ Luciver is the Discord concierge for the Lumina dev server. It reacts to natural
 - **Insights layer** – Tracks per-channel and per-member message volume so `stats` calls can highlight top contributors, quiet channels, and pending operational items alongside role headcounts.
 - **Startup health** – Logs `Luciver is online as ...` once the client connects so you know it is live.
 
-## What You Can Tune
-
-- **Reminder cadence** – Adjust `REMINDER_CHECK_INTERVAL_MS` if you need faster or slower sweeps.
-- **Digest schedule** – Change `TASK_DIGEST_TARGET_DAY` / `TASK_DIGEST_TARGET_HOUR` for a different day or time; set `TASK_DIGEST_MIN_INTERVAL_MS` to avoid duplicate reports.
-- **Local timezone** – Luciver defaults to Indian Standard Time (`Asia/Kolkata`). Provide `LUCIVER_TIMEZONE` (IANA format such as `America/New_York`) if you need a different zone so reminders, logs, and weekly reports render dates in your expected locale.
-- **Moderator channel** – Provide `MODERATOR_CHANNEL_ID` in `.env` to enable weekly digests; leave empty to skip them.
-- **Task permissions** – Only members with a role containing “moderator” can assign tasks through Luciver.
-- **Reach-out channel name** – Override `REACH_OUT_CHANNEL_NAME` (defaults to `reach-out`) if your server uses a different channel slug for excuse submissions.
 
 ## Internal Stores
 
@@ -46,28 +38,3 @@ Luciver is the Discord concierge for the Lumina dev server. It reacts to natural
 - `reminderQueue` – Array of reminders awaiting delivery plus timestamps and delivery outcomes.
 - `channelActivity` – Map keyed by channel ID tracking counts and last active timestamps.
 - `reachOutReports` – Rolling list (500 max) of reach-out notices with excerpts and timestamps for moderator insights and stats output.
-
-## File Of Record
-
-- `index.js` – Houses the Discord client configuration, message handlers, scheduling loops, and helper utilities.
-
-## Setup & Run
-
-1. Create `.env` with `TOKEN=<bot token>` and optionally `MODERATOR_CHANNEL_ID=<channel id>` / `LUCIVER_LOG_CHANNEL_ID=<channel id>`.
-2. Install dependencies: `npm install`.
-3. Launch: `node index.js`.
-4. Validate in Discord using the triggers above.
-
-## Future Optimisations
-
-- Persist tasks and reminders so they survive restarts (database or JSON store).
-- Add acknowledgement commands to mark tasks complete and skip them in the digest.
-- Provide a slash-command layer mirroring the text cues for clearer autocomplete.
-
-## Configuration Keys
-
-- `TOKEN` – Discord bot token (required).
-- `MODERATOR_CHANNEL_ID` – Channel used for the weekly digest (optional).
-- `LUCIVER_LOG_CHANNEL_ID` – Channel that receives task/reminder logs (optional but recommended).
-- `LUCIVER_TIMEZONE` – IANA timezone identifier (e.g. `Europe/London`) applied to reminder scheduling, digests, and log timestamps (defaults to `Asia/Kolkata`).
-- `REACH_OUT_CHANNEL_NAME` – Lowercase name of the channel that collects excuse posts; defaults to `reach-out` if unset.

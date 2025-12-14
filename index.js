@@ -35,6 +35,8 @@ const taskBacklog = [];
 const reminderQueue = [];
 const reachOutReports = [];
 const MOD_DELETE_MAX_MESSAGES = 20;
+const MOD_DELETE_MAX_RANGE_MESSAGES = 200;
+const DISCORD_BULK_DELETE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 const DAILY_REMINDER_ROLE_NAME = "bashers";
 const DAILY_REMINDER_HOUR = 20; // 8 PM
@@ -221,9 +223,9 @@ const buildHelpEmbed = () => {
       {
         name: "Clear Recent Messages (mods)",
         value: formatHelpField(
-          "Luciver delete/remove the above <N> messages",
-          "Luciver delete the above 3 messages",
-          "Removes up to 20 recent, unpinned messages in this channel so moderators can tidy sensitive threads quickly."
+          "Luciver delete/remove …",
+          "Luciver delete the above 3 messages\nLuciver delete all messages from today up to 10am",
+          "Tidies previous posts: remove up to 20 messages by count, sweep everything above, or clear today’s history up to a specific time (caps at 200 and skips items older than 14 days)."
         ),
         inline: false
       },
@@ -678,8 +680,14 @@ const sendChannelPing = async (message, rawContent) => {
 };
 
 const handleModeratorBulkDelete = async (message, rawContent) => {
-  const match = rawContent.match(/\b(?:delete|remove)\s+(?:the\s+)?(?:above\s+)?(\d{1,3})\s+(?:msgs?|messages?)\b/i);
-  if (!match) {
+  const normalized = rawContent.toLowerCase();
+  const countMatch = rawContent.match(/\b(?:delete|remove)\s+(?:the\s+)?(?:above\s+)?(\d{1,3})\s+(?:msgs?|messages?)\b/i);
+  const sweepMatch = /\b(?:delete|remove)\s+all\s+(?:the\s+)?above\s+(?:msgs?|messages?)(?:\s+in\s+this\s+channel)?\b/i.test(normalized)
+    ? true
+    : false;
+  const rangeMatch = rawContent.match(/\b(?:delete|remove)\s+all\s+messages\s+from\s+(today|yesterday)\s+(?:up\s*to|until)\s+([0-9: ]+(?:am|pm)?)\b/i);
+
+  if (!countMatch && !sweepMatch && !rangeMatch) {
     return false;
   }
 
@@ -698,7 +706,222 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
     return true;
   }
 
-  const requestedCount = Number(match[1]);
+  const chunkIdsAndDelete = async (targets, context) => {
+    const targetIds = targets.map((msg) => msg.id);
+    let removedTotal = 0;
+    let encounteredError = null;
+
+    for (let index = 0; index < targetIds.length; index += 100) {
+      const slice = targetIds.slice(index, index + 100);
+      try {
+        const deleted = await message.channel.bulkDelete(slice, true);
+        removedTotal += deleted?.size ?? 0;
+      } catch (error) {
+        console.error("Failed to bulk delete messages", error);
+        encounteredError = error;
+        break;
+      }
+    }
+
+    const skipped = targets.length - removedTotal;
+
+    await postLogEntry(
+      [
+        "Moderator cleanup executed",
+        `• Channel: <#${message.channel.id}>`,
+        `• Requested by: <@${message.author.id}>`,
+        `• Mode: ${context}`,
+        `• Attempted: ${targets.length}`,
+        `• Removed: ${removedTotal}`,
+        skipped ? `• Skipped: ${skipped}` : null,
+        `• Timestamp: ${formatDateTime(Date.now())}`
+      ].filter(Boolean).join("\n"),
+      { allowedMentions: { users: [message.author.id], roles: [] } }
+    );
+
+    return { removedTotal, skipped, encounteredError };
+  };
+
+  const fetchMessages = async (options) => {
+    const targets = [];
+    let beforeId = message.id;
+    let keepFetching = true;
+    const nowMs = Date.now();
+
+    while (keepFetching && targets.length < options.max) {
+      let batch;
+      try {
+        batch = await message.channel.messages.fetch({ limit: 100, before: beforeId });
+      } catch (error) {
+        console.error("Failed to fetch messages for moderator sweep", error);
+        throw new Error("fetch-failed");
+      }
+
+      if (!batch?.size) {
+        break;
+      }
+
+      const ordered = [...batch.values()];
+      let earliest = null;
+
+      for (const msg of ordered) {
+        earliest = msg;
+
+        if (nowMs - msg.createdTimestamp > DISCORD_BULK_DELETE_WINDOW_MS) {
+          continue;
+        }
+
+        if (msg.pinned) {
+          continue;
+        }
+
+        if (options.filter && !options.filter(msg)) {
+          continue;
+        }
+
+        targets.push(msg);
+
+        if (targets.length === options.max) {
+          keepFetching = false;
+          break;
+        }
+      }
+
+      if (!earliest) {
+        break;
+      }
+
+      beforeId = earliest.id;
+
+      if (options.stopCondition && options.stopCondition(earliest)) {
+        break;
+      }
+    }
+
+    return targets;
+  };
+
+  if (rangeMatch) {
+    const [, dayTokenRaw, timeTokenRaw] = rangeMatch;
+    const dayToken = dayTokenRaw.toLowerCase();
+    const nowZoned = DateTime.now().setZone(TARGET_TIMEZONE);
+    let startBoundary = nowZoned.startOf("day");
+
+    if (dayToken === "yesterday") {
+      startBoundary = startBoundary.minus({ days: 1 });
+    }
+
+    const timeMatch = timeTokenRaw.trim();
+    const timePattern = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i;
+    const parsedTime = timePattern.exec(timeMatch);
+
+    if (!parsedTime) {
+      await message.reply("I couldn’t parse that time—try something like 10am or 14:30.");
+      return true;
+    }
+
+    let hour = Number(parsedTime[1]);
+    const minute = parsedTime[2] ? Number(parsedTime[2]) : 0;
+    const suffix = parsedTime[3]?.toLowerCase() ?? null;
+
+    if (!Number.isFinite(hour) || hour > 23 || minute > 59) {
+      await message.reply("That time doesn’t look right—double-check the hour and minutes.");
+      return true;
+    }
+
+    if (suffix) {
+      if (hour === 12) {
+        hour = suffix === "am" ? 0 : 12;
+      } else if (suffix === "pm") {
+        hour += 12;
+      }
+    }
+
+    const endBoundary = startBoundary.set({ hour, minute, second: 0, millisecond: 0 });
+    const cappedEnd = endBoundary > nowZoned ? nowZoned : endBoundary;
+
+    if (cappedEnd <= startBoundary) {
+      await message.reply("The time range you gave is empty—pick a later time.");
+      return true;
+    }
+
+    const startMillis = startBoundary.toMillis();
+    const endMillis = cappedEnd.toMillis();
+
+    let targets;
+    try {
+      targets = await fetchMessages({
+        max: MOD_DELETE_MAX_RANGE_MESSAGES,
+        filter: (msg) => msg.createdTimestamp >= startMillis && msg.createdTimestamp <= endMillis,
+        stopCondition: (earliest) => earliest.createdTimestamp < startMillis
+      });
+    } catch (error) {
+      if (error.message === "fetch-failed") {
+        await message.reply("I couldn't review the previous messages—try again in a moment.");
+        return true;
+      }
+      throw error;
+    }
+
+    if (!targets.length) {
+      await message.reply("I didn’t find any messages in that timeframe to remove.");
+      return true;
+    }
+
+    const { removedTotal, skipped, encounteredError } = await chunkIdsAndDelete(targets, `range (${dayToken} up to ${timeTokenRaw.trim()})`);
+
+    if (encounteredError) {
+      await message.reply("I hit a snag while clearing that range—some messages might remain."
+      );
+      return true;
+    }
+
+    const summaryParts = [`Removed ${removedTotal} message${removedTotal === 1 ? "" : "s"}`];
+    if (skipped) {
+      summaryParts.push(`${skipped} couldn’t be removed (likely older than 14 days).`);
+    }
+    await message.reply(summaryParts.join(". "));
+    return true;
+  }
+
+  if (sweepMatch) {
+    let targets;
+    try {
+      targets = await fetchMessages({
+        max: MOD_DELETE_MAX_RANGE_MESSAGES,
+        filter: () => true,
+        stopCondition: (earliest) => Date.now() - earliest.createdTimestamp > DISCORD_BULK_DELETE_WINDOW_MS
+      });
+    } catch (error) {
+      if (error.message === "fetch-failed") {
+        await message.reply("I couldn't review the previous messages—try again in a moment.");
+        return true;
+      }
+      throw error;
+    }
+
+    if (!targets.length) {
+      await message.reply("I didn’t find any removable messages above this one.");
+      return true;
+    }
+
+    const { removedTotal, skipped, encounteredError } = await chunkIdsAndDelete(targets, "sweep above");
+
+    if (encounteredError) {
+      await message.reply("I ran into an issue while clearing those messages—some might still remain.");
+      return true;
+    }
+
+    const summaryParts = [`Removed ${removedTotal} message${removedTotal === 1 ? "" : "s"}`];
+    if (skipped) {
+      summaryParts.push(`${skipped} couldn’t be removed (likely older than 14 days).`);
+    }
+    await message.reply(summaryParts.join(". "));
+    return true;
+  }
+
+  // Count-based branch
+  const requestedCount = Number(countMatch[1]);
   if (!Number.isFinite(requestedCount) || requestedCount <= 0) {
     await message.reply("Tell me how many messages to remove—use a positive number.");
     return true;
@@ -742,41 +965,19 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
     return true;
   }
 
-  let deleted;
-  try {
-    deleted = await message.channel.bulkDelete(targets, true);
-  } catch (error) {
-    console.error("Failed to bulk delete messages", error);
-    await message.reply("I couldn’t remove those messages. They might be too old or I lack permission.");
+  const { removedTotal, skipped, encounteredError } = await chunkIdsAndDelete(targets, `count (${requestedCount})`);
+
+  if (encounteredError) {
+    await message.reply("I couldn’t remove all of those messages. Some might remain—most likely they’re older than 14 days.");
     return true;
   }
 
-  const removedCount = deleted?.size ?? 0;
-  if (!removedCount) {
-    await message.reply("None of the messages were removed—most likely they’re older than 14 days.");
-    return true;
-  }
-
-  const remaining = requestedCount - removedCount;
+  const remaining = Math.max(0, requestedCount - removedTotal);
   const summary = remaining > 0
-    ? `Removed ${removedCount} message${removedCount === 1 ? "" : "s"}. ${remaining} couldn’t be removed (likely too old).`
-    : `Removed ${removedCount} message${removedCount === 1 ? "" : "s"}.`;
+    ? `Removed ${removedTotal} message${removedTotal === 1 ? "" : "s"}. ${remaining} couldn’t be removed (likely too old).`
+    : `Removed ${removedTotal} message${removedTotal === 1 ? "" : "s"}.`;
 
   await message.reply(summary);
-
-  await postLogEntry(
-    [
-      "Moderator cleanup executed",
-      `• Channel: <#${message.channel.id}>`,
-      `• Requested by: <@${message.author.id}>`,
-      `• Attempted: ${requestedCount}`,
-      `• Removed: ${removedCount}`,
-      remaining > 0 ? `• Skipped: ${remaining}` : null,
-      `• Timestamp: ${formatDateTime(Date.now())}`
-    ].filter(Boolean).join("\n"),
-    { allowedMentions: { users: [message.author.id], roles: [] } }
-  );
-
   return true;
 };
 
