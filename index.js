@@ -1400,7 +1400,9 @@ const resolveReminderAudience = async (message, targetToken, matchedUserId, matc
     return { error: "I couldn't figure out who to remind." };
   }
 
-  if (targetToken.toLowerCase() === "me") {
+  const loweredToken = targetToken.toLowerCase();
+
+  if (loweredToken === "me") {
     return {
       type: "user",
       id: message.author.id,
@@ -1410,7 +1412,7 @@ const resolveReminderAudience = async (message, targetToken, matchedUserId, matc
     };
   }
 
-  if (targetToken.toLowerCase() === "@everyone") {
+  if (loweredToken === "@everyone" || loweredToken === "everyone") {
     if (!message.guild) {
       return { error: "@everyone reminders only work inside a server." };
     }
@@ -1830,7 +1832,7 @@ const scheduleDailyRoleReminder = () => {
 };
 
 const logReminder = async (message, rawContent) => {
-  const match = rawContent.match(/remind\s+(me|@everyone|<@!?(\d+)>|<@&(\d+)>)(?:\s+to)?\s+(.+)/i);
+  const match = rawContent.match(/remind\s+(me|@?everyone|<@!?(\d+)>|<@&(\d+)>)(?:\s+to)?\s+(.+)/i);
   if (!match) {
     return false;
   }
