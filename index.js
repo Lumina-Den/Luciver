@@ -179,45 +179,82 @@ const formatDuration = (milliseconds) => {
   return segments.join(" ");
 };
 
+const formatHelpField = (command, example, description) => {
+  return [`- Command: ${command}`, `- Example: ${example}`, `- What it does: ${description}`].join("\n");
+};
+
 const buildHelpEmbed = () => {
   return new EmbedBuilder()
     .setAuthor({ name: "Hey, I got you here." })
     .setTitle("Luciver Quick Assist")
-    .setColor(0x5865f2)
-    .setDescription("Here’s how to talk to me—mention my name plus one of these cues:")
+    .setColor(0x4f46e5)
+    .setDescription("Mention me with one of these prompts and I’ll take it from there:")
     .addFields(
       {
-        name: "Check-in",
-        value: "`Luciver help` — I’ll recap what I can do and what’s coming soon.",
+        name: "Get Help",
+        value: formatHelpField(
+          "Luciver help",
+          "Luciver help",
+          "Shows every available feature with quick reminders so you can move fast."
+        ),
         inline: false
       },
       {
-        name: "Signal a Channel",
-        value: "`Luciver ping #channel` — reply to the message you want forwarded or add a note after the channel mention.",
+        name: "Forward Something",
+        value: formatHelpField(
+          "Luciver ping #channel [note]",
+          "Luciver ping #frontend send the above plan",
+          "Relays the replied (or last non-bot) message into each tagged channel and keeps your note attached."
+        ),
         inline: false
       },
       {
-        name: "Assign Work",
-        value: "`Luciver assign @teammate task details` — moderators log tasks that roll into the weekly digest.",
+        name: "Assign Work (mods)",
+        value: formatHelpField(
+          "Luciver assign @teammate task details",
+          "Luciver assign @Nova ship mobile polish by Friday",
+          "Logs the task, DMs the assignee (channel fallback if needed), and queues it for the Sunday moderator digest."
+        ),
         inline: false
       },
       {
         name: "Set a Reminder",
-        value: "`Luciver remind me to stretch in 20m` or `... at 14:30` — I’ll schedule it and DM when due.",
+        value: formatHelpField(
+          "Luciver remind me/@user/@everyone note in <time>",
+          "Luciver remind @everyone prep release notes at 17:00",
+          "Understands in 20m, tomorrow 5pm, or 17 Dec 09:00, then delivers the reminder directly at the right moment."
+        ),
         inline: false
       },
       {
         name: "Server Pulse",
-        value: "`Luciver stats` — I’ll share which channels are heating up lately.",
+        value: formatHelpField(
+          "Luciver stats",
+          "Luciver stats",
+          "Returns traffic totals, top channels, top contributors, quiet spots, and the ops snapshot (tasks, reminders, reach-outs)."
+        ),
         inline: false
       },
       {
-        name: "Weekly Digest",
-        value: "All open assignments roll into Monday 2 PM updates in #moderator-only (set MODERATOR_CHANNEL_ID).",
+        name: "Reach-out Cover",
+        value: formatHelpField(
+          "@Luciver <reason> (inside reach-out)",
+          "@Luciver I’m tied up with a client call, can’t make the 5 PM review",
+          "Drop your reason in reach-out and I’ll log it for moderators, leave a trail in your CBS record, and spare you follow-up pings."
+        ),
+        inline: false
+      },
+      {
+        name: "Automation Highlights",
+        value: [
+          "- Weekly digest lands Sundays 14:00 in the moderator channel (set MODERATOR_CHANNEL_ID).",
+          "- Daily progress ping nudges the bashers role every evening at 20:00.",
+          "- Voice meeting attendance summaries post automatically when tracked rooms empty."
+        ].join("\n"),
         inline: false
       }
     )
-    .setFooter({ text: "More automations on deck—stay tuned." });
+    .setFooter({ text: "Need something custom? Say my name and describe it." });
 };
 
 const hasAssignPermission = (message) => {
