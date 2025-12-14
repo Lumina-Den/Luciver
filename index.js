@@ -224,7 +224,7 @@ const buildHelpEmbed = () => {
         name: "Clear Recent Messages (mods)",
         value: formatHelpField(
           "Luciver delete/remove …",
-          "Luciver delete the above 3 messages\nLuciver delete all messages from today up to 10am",
+          "Luciver delete the above 3 messages\nLuciver delete all messages from today up to 10am\nLuciver delete all messages from 14 Dec",
           "Tidies previous posts: remove up to 20 messages by count, sweep everything above, or clear today’s history up to a specific time (caps at 200 and skips items older than 14 days)."
         ),
         inline: false
@@ -686,8 +686,11 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
     ? true
     : false;
   const rangeMatch = rawContent.match(/\b(?:delete|remove)\s+all\s+messages\s+from\s+(today|yesterday)\s+(?:up\s*to|until)\s+([0-9: ]+(?:am|pm)?)\b/i);
+  const dateMatch = rawContent.match(
+    /\b(?:delete|remove)\s+all\s+messages\s+from\s+(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{4}))?(?:\s+(?:up\s*to|until)\s+([0-9: ]+(?:am|pm)?))?\b/i
+  );
 
-  if (!countMatch && !sweepMatch && !rangeMatch) {
+  if (!countMatch && !sweepMatch && !rangeMatch && !dateMatch) {
     return false;
   }
 
@@ -697,7 +700,7 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
   }
 
   if (!message.channel?.isTextBased()) {
-    await message.reply("That channel doesn’t support bulk message removal.");
+    await message.reply("That channel doesn't support bulk message removal.");
     return true;
   }
 
@@ -816,7 +819,7 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
     const parsedTime = timePattern.exec(timeMatch);
 
     if (!parsedTime) {
-      await message.reply("I couldn’t parse that time—try something like 10am or 14:30.");
+      await message.reply("I couldn't parse that time - try something like 10am or 14:30.");
       return true;
     }
 
@@ -825,7 +828,7 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
     const suffix = parsedTime[3]?.toLowerCase() ?? null;
 
     if (!Number.isFinite(hour) || hour > 23 || minute > 59) {
-      await message.reply("That time doesn’t look right—double-check the hour and minutes.");
+      await message.reply("That time doesn't look right - double-check the hour and minutes.");
       return true;
     }
 
@@ -841,44 +844,184 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
     const cappedEnd = endBoundary > nowZoned ? nowZoned : endBoundary;
 
     if (cappedEnd <= startBoundary) {
-      await message.reply("The time range you gave is empty—pick a later time.");
+      await message.reply("The time range you gave is empty - pick a later time.");
       return true;
     }
 
     const startMillis = startBoundary.toMillis();
     const endMillis = cappedEnd.toMillis();
+    const cutoffMs = Date.now() - DISCORD_BULK_DELETE_WINDOW_MS;
+    const effectiveStartMs = Math.max(startMillis, cutoffMs);
+
+    if (effectiveStartMs > endMillis) {
+      await message.reply("Those messages are older than Discord's 14-day bulk delete limit.");
+      return true;
+    }
 
     let targets;
     try {
       targets = await fetchMessages({
         max: MOD_DELETE_MAX_RANGE_MESSAGES,
-        filter: (msg) => msg.createdTimestamp >= startMillis && msg.createdTimestamp <= endMillis,
-        stopCondition: (earliest) => earliest.createdTimestamp < startMillis
+        filter: (msg) => msg.createdTimestamp >= effectiveStartMs && msg.createdTimestamp <= endMillis,
+        stopCondition: (earliest) => earliest.createdTimestamp < effectiveStartMs
       });
     } catch (error) {
       if (error.message === "fetch-failed") {
-        await message.reply("I couldn't review the previous messages—try again in a moment.");
+        await message.reply("I couldn't review the previous messages - try again in a moment.");
         return true;
       }
       throw error;
     }
 
     if (!targets.length) {
-      await message.reply("I didn’t find any messages in that timeframe to remove.");
+      await message.reply("I didn't find any messages in that timeframe to remove.");
       return true;
     }
 
     const { removedTotal, skipped, encounteredError } = await chunkIdsAndDelete(targets, `range (${dayToken} up to ${timeTokenRaw.trim()})`);
 
     if (encounteredError) {
-      await message.reply("I hit a snag while clearing that range—some messages might remain."
-      );
+      await message.reply("I hit a snag while clearing that range - some messages might remain.");
       return true;
     }
 
     const summaryParts = [`Removed ${removedTotal} message${removedTotal === 1 ? "" : "s"}`];
     if (skipped) {
-      summaryParts.push(`${skipped} couldn’t be removed (likely older than 14 days).`);
+      summaryParts.push(`${skipped} couldn't be removed (likely older than 14 days).`);
+    }
+    await message.reply(summaryParts.join(". "));
+    return true;
+  }
+
+  if (dateMatch) {
+    const [, dayRaw, monthRaw, yearRaw, timeTokenRaw] = dateMatch;
+    const nowZoned = DateTime.now().setZone(TARGET_TIMEZONE);
+
+    const day = Number(dayRaw);
+    if (!Number.isFinite(day) || day < 1 || day > 31) {
+      await message.reply("I couldn't understand that date - double-check the day number.");
+      return true;
+    }
+
+    const monthBase = monthRaw.toLowerCase();
+    const monthKey = monthBase.startsWith("sept") ? "sept" : monthBase.slice(0, 3);
+    const monthNumber = MONTH_LOOKUP[monthKey];
+    if (!monthNumber) {
+      await message.reply("I couldn't understand that month - try spelling it like 'Dec' or 'December'.");
+      return true;
+    }
+
+    let year = yearRaw ? Number(yearRaw) : nowZoned.year;
+    if (!Number.isFinite(year) || year < 1970) {
+      await message.reply("That year doesn't look right.");
+      return true;
+    }
+
+    let startBoundary = DateTime.fromObject(
+      { year, month: monthNumber, day },
+      { zone: TARGET_TIMEZONE }
+    );
+
+    if (!startBoundary.isValid) {
+      await message.reply("That date doesn't exist - double-check the day and month.");
+      return true;
+    }
+
+    startBoundary = startBoundary.startOf("day");
+
+    if (!yearRaw && startBoundary > nowZoned) {
+      startBoundary = startBoundary.minus({ years: 1 });
+    }
+
+    let endBoundary;
+    if (timeTokenRaw) {
+      const trimmedTime = timeTokenRaw.trim();
+      const timePattern = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i;
+      const parsedTime = timePattern.exec(trimmedTime);
+
+      if (!parsedTime) {
+        await message.reply("I couldn't parse that time - try something like 10am or 14:30.");
+        return true;
+      }
+
+      let hour = Number(parsedTime[1]);
+      const minute = parsedTime[2] ? Number(parsedTime[2]) : 0;
+      const suffix = parsedTime[3]?.toLowerCase() ?? null;
+
+      if (!Number.isFinite(hour) || hour > 23 || minute > 59) {
+        await message.reply("That time doesn't look right - double-check the hour and minutes.");
+        return true;
+      }
+
+      if (suffix) {
+        if (hour === 12) {
+          hour = suffix === "am" ? 0 : 12;
+        } else if (suffix === "pm") {
+          hour += 12;
+        }
+      }
+
+      endBoundary = startBoundary
+        .set({ hour, minute, second: 0, millisecond: 0 })
+        .plus({ minutes: 1 })
+        .minus({ milliseconds: 1 });
+    } else {
+      endBoundary = startBoundary.plus({ days: 1 }).minus({ milliseconds: 1 });
+    }
+
+    const cappedEnd = endBoundary > nowZoned ? nowZoned : endBoundary;
+
+    if (cappedEnd <= startBoundary) {
+      await message.reply("That window doesn't include any time that has already happened.");
+      return true;
+    }
+
+    const startMillis = startBoundary.toMillis();
+    const endMillis = cappedEnd.toMillis();
+    const cutoffMs = Date.now() - DISCORD_BULK_DELETE_WINDOW_MS;
+    const effectiveStartMs = Math.max(startMillis, cutoffMs);
+
+    if (effectiveStartMs > endMillis) {
+      await message.reply("Those messages are older than Discord's 14-day bulk delete limit.");
+      return true;
+    }
+
+    let targets;
+    try {
+      targets = await fetchMessages({
+        max: MOD_DELETE_MAX_RANGE_MESSAGES,
+        filter: (msg) => msg.createdTimestamp >= effectiveStartMs && msg.createdTimestamp <= endMillis,
+        stopCondition: (earliest) => earliest.createdTimestamp < effectiveStartMs
+      });
+    } catch (error) {
+      if (error.message === "fetch-failed") {
+        await message.reply("I couldn't review the previous messages - try again in a moment.");
+        return true;
+      }
+      throw error;
+    }
+
+    if (!targets.length) {
+      await message.reply("I didn't find any messages in that date range to remove.");
+      return true;
+    }
+
+    const labelDate = startBoundary.toFormat("dd LLL yyyy");
+    const labelSuffix = timeTokenRaw ? ` until ${timeTokenRaw.trim()}` : "";
+
+    const { removedTotal, skipped, encounteredError } = await chunkIdsAndDelete(
+      targets,
+      `date (${labelDate}${labelSuffix})`
+    );
+
+    if (encounteredError) {
+      await message.reply("I hit a snag while clearing that date range - some messages might remain.");
+      return true;
+    }
+
+    const summaryParts = [`Removed ${removedTotal} message${removedTotal === 1 ? "" : "s"}`];
+    if (skipped) {
+      summaryParts.push(`${skipped} couldn't be removed (likely older than 14 days).`);
     }
     await message.reply(summaryParts.join(". "));
     return true;
@@ -894,27 +1037,27 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
       });
     } catch (error) {
       if (error.message === "fetch-failed") {
-        await message.reply("I couldn't review the previous messages—try again in a moment.");
+        await message.reply("I couldn't review the previous messages - try again in a moment.");
         return true;
       }
       throw error;
     }
 
     if (!targets.length) {
-      await message.reply("I didn’t find any removable messages above this one.");
+      await message.reply("I didn't find any removable messages above this one.");
       return true;
     }
 
     const { removedTotal, skipped, encounteredError } = await chunkIdsAndDelete(targets, "sweep above");
 
     if (encounteredError) {
-      await message.reply("I ran into an issue while clearing those messages—some might still remain.");
+      await message.reply("I ran into an issue while clearing those messages - some might still remain.");
       return true;
     }
 
     const summaryParts = [`Removed ${removedTotal} message${removedTotal === 1 ? "" : "s"}`];
     if (skipped) {
-      summaryParts.push(`${skipped} couldn’t be removed (likely older than 14 days).`);
+      summaryParts.push(`${skipped} couldn't be removed (likely older than 14 days).`);
     }
     await message.reply(summaryParts.join(". "));
     return true;
@@ -923,7 +1066,7 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
   // Count-based branch
   const requestedCount = Number(countMatch[1]);
   if (!Number.isFinite(requestedCount) || requestedCount <= 0) {
-    await message.reply("Tell me how many messages to remove—use a positive number.");
+    await message.reply("Tell me how many messages to remove - use a positive number.");
     return true;
   }
 
@@ -940,12 +1083,12 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
     });
   } catch (error) {
     console.error("Failed to fetch messages for moderator delete", error);
-    await message.reply("I couldn't review the previous messages—try again in a moment.");
+    await message.reply("I couldn't review the previous messages - try again in a moment.");
     return true;
   }
 
   if (!fetched?.size) {
-    await message.reply("I couldn’t find any messages above yours to remove.");
+    await message.reply("I couldn't find any messages above yours to remove.");
     return true;
   }
 
@@ -961,20 +1104,20 @@ const handleModeratorBulkDelete = async (message, rawContent) => {
   }
 
   if (!targets.length) {
-    await message.reply("Everything above is pinned or already gone—I didn’t remove anything.");
+    await message.reply("Everything above is pinned or already gone - I didn't remove anything.");
     return true;
   }
 
   const { removedTotal, skipped, encounteredError } = await chunkIdsAndDelete(targets, `count (${requestedCount})`);
 
   if (encounteredError) {
-    await message.reply("I couldn’t remove all of those messages. Some might remain—most likely they’re older than 14 days.");
+    await message.reply("I couldn't remove all of those messages. Some might remain - most likely they're older than 14 days.");
     return true;
   }
 
   const remaining = Math.max(0, requestedCount - removedTotal);
   const summary = remaining > 0
-    ? `Removed ${removedTotal} message${removedTotal === 1 ? "" : "s"}. ${remaining} couldn’t be removed (likely too old).`
+    ? `Removed ${removedTotal} message${removedTotal === 1 ? "" : "s"}. ${remaining} couldn't be removed (likely too old).`
     : `Removed ${removedTotal} message${removedTotal === 1 ? "" : "s"}.`;
 
   await message.reply(summary);
@@ -2164,10 +2307,6 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  if (await handleReachOutExcuse(message)) {
-    return;
-  }
-
   const normalized = rawContent.toLowerCase();
 
   if (isGreetingMessage(message)) {
@@ -2186,6 +2325,10 @@ client.on("messageCreate", async (message) => {
     if (handled) {
       return;
     }
+  }
+
+  if (await handleReachOutExcuse(message)) {
+    return;
   }
 });
 
