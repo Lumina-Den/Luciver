@@ -18,20 +18,22 @@ client.once("ready", () => {
   startSchedulers();
 });
 
-const greetingResponse = [
-  "Hey, I'm Luciver, keeping an eye on the Lumina hub so conversations stay sharp and useful.",
-  "Need schedules, reminders, or quick updates? Drop me a line and I'll steady the flow.",
-  "Before you dive in, a quick set of house notes:",
-  "- Respect the people behind the screens; disagreements stay thoughtful.",
-  "- Keep general chat for community moments; launch deeper dives in their dedicated spots.",
-  "- Flag anything off track so mods can step in early.",
-  "We're here to build momentum together—let me know when you need backup."
+const greetingIntroResponse = [
+  "Hey! I'm Luciver, the server concierge keeping schedules tidy and updates flowing.",
+  "\nCode of conduct quick hits:",
+  "- Keep conversations respectful and on-topic for each channel.",
+  "- Spin up deeper dives in focused channels so threads stay tidy.",
+  "- Flag anything off-track early so moderators can help out.",
+  "\nNeed anything from me? Just say `Luciver help` or tell me what you need."
 ].join("\n");
+
+const namePingResponse = "You mentioned my name—how can I help?";
 
 const channelActivity = new Map();
 const memberActivity = new Map();
 const taskBacklog = [];
 const reminderQueue = [];
+const reachOutReports = [];
 
 const DAILY_REMINDER_ROLE_NAME = "bashers";
 const DAILY_REMINDER_HOUR = 20; // 8 PM
@@ -41,6 +43,8 @@ const DAILY_REMINDER_MESSAGE = "Uploaded today's progress?! If not, do it now!!"
 const MODERATOR_CHANNEL_ID = process.env.MODERATOR_CHANNEL_ID;
 const LUCIVER_LOG_CHANNEL_ID = process.env.LUCIVER_LOG_CHANNEL_ID;
 const TRACKED_VOICE_CHANNEL_NAMES = new Set(["voice meeting", "weekly-bash-discussion"]);
+const REACH_OUT_CHANNEL_NAME = (process.env.REACH_OUT_CHANNEL_NAME || "reach-out").trim().toLowerCase();
+const REACH_OUT_MAX_RECORDS = 500;
 
 const voiceSessions = new Map();
 
@@ -97,6 +101,41 @@ const recordChannelActivity = (message) => {
   memberSnapshot.lastChannelId = message.channelId;
 
   memberActivity.set(authorId, memberSnapshot);
+};
+
+const normalizeForNameChecks = (text, botId) => {
+  if (!text) {
+    return "";
+  }
+
+  let working = text.trim().toLowerCase();
+
+  if (botId) {
+    const mentionPattern = new RegExp(`<@!?${botId}>`, "g");
+    working = working.replace(mentionPattern, "luciver");
+  }
+
+  return working.replace(/[!?.:,*/\\`'"()\-]+/g, " ").replace(/\s+/g, " ").trim();
+};
+
+const isGreetingMessage = (message) => {
+  const botId = client.user?.id || null;
+  const normalized = normalizeForNameChecks(message.content, botId);
+  if (!normalized) {
+    return false;
+  }
+
+  return /^(hey|hi|hello)(\s+luciver)?$/i.test(normalized);
+};
+
+const isPlainNamePing = (message) => {
+  const botId = client.user?.id || null;
+  const normalized = normalizeForNameChecks(message.content, botId);
+  if (!normalized) {
+    return false;
+  }
+
+  return normalized === "luciver";
 };
 
 const relativeTime = (timestamp) => {
@@ -1043,6 +1082,157 @@ const formatDateTime = (timestamp) => {
   return `${dt.toLocaleString(DateTime.DATETIME_MED)} (${label})`;
 };
 
+const findModeratorRole = (guild) => {
+  if (!guild) {
+    return null;
+  }
+
+  const roles = guild.roles?.cache;
+  if (!roles?.size) {
+    return null;
+  }
+
+  return roles.find(
+    (role) => typeof role.name === "string" && role.name.trim().toLowerCase().includes("moderator")
+  ) || null;
+};
+
+const sanitizeReachOutContent = (message) => {
+  if (!message?.content) {
+    return "";
+  }
+
+  let content = message.content;
+  const botId = client.user?.id;
+
+  if (botId) {
+    const leadingMentionPattern = new RegExp(`^\\s*<@!?${botId}>\\s*`, "i");
+    content = content.replace(leadingMentionPattern, "");
+    const genericMentionPattern = new RegExp(`<@!?${botId}>`, "gi");
+    content = content.replace(genericMentionPattern, "");
+  }
+
+  content = content.replace(/^\s*luciver\b[\s,:-]*/i, "");
+
+  return content.trim();
+};
+
+const buildReachOutEmbed = (message, detailsText, submittedAt) => {
+  const description = detailsText ? detailsText.slice(0, 4000) : "No additional details provided.";
+  const embed = new EmbedBuilder()
+    .setColor(0xe17055)
+    .setTitle("Reach-out Notice")
+    .setDescription(description)
+    .addFields(
+      { name: "Member", value: `<@${message.author.id}>`, inline: true },
+      { name: "Submitted", value: formatDateTime(submittedAt), inline: true },
+      { name: "From Channel", value: `<#${message.channelId}>`, inline: true }
+    )
+    .setFooter({ text: "Luciver reach-out tracker" });
+
+  if (message.guildId) {
+    const jumpLink = `https://discord.com/channels/${message.guildId}/${message.channelId}/${message.id}`;
+    embed.addFields({ name: "Message Link", value: `[Open update](${jumpLink})`, inline: false });
+  }
+
+  return embed;
+};
+
+const recordReachOutReport = (message, detailsText, submittedAt) => {
+  const safeExcerpt = detailsText.length > 500 ? `${detailsText.slice(0, 497)}...` : detailsText;
+
+  reachOutReports.push({
+    authorId: message.author.id,
+    channelId: message.channelId,
+    messageId: message.id,
+    submittedAt,
+    excerpt: safeExcerpt
+  });
+
+  if (reachOutReports.length > REACH_OUT_MAX_RECORDS) {
+    reachOutReports.shift();
+  }
+};
+
+const handleReachOutExcuse = async (message) => {
+  if (!message.inGuild()) {
+    return false;
+  }
+
+  const channelName = message.channel?.name?.trim().toLowerCase();
+  if (channelName !== REACH_OUT_CHANNEL_NAME) {
+    return false;
+  }
+
+  const content = message.content?.toLowerCase() || "";
+  const mentionsLuciver = message.mentions.has(client.user) || content.includes("luciver");
+  if (!mentionsLuciver) {
+    return false;
+  }
+
+  const submittedAt = Date.now();
+  const detailsText = sanitizeReachOutContent(message);
+
+  if (!detailsText) {
+    await message.reply("I need a quick note after you tag me so I can brief the moderators.");
+    return true;
+  }
+
+  recordReachOutReport(message, detailsText, submittedAt);
+
+  const embed = buildReachOutEmbed(message, detailsText, submittedAt);
+  const moderatorRole = findModeratorRole(message.guild);
+  const allowedMentions = {
+    users: [message.author.id],
+    roles: moderatorRole ? [moderatorRole.id] : []
+  };
+
+  const mentionLabel = moderatorRole ? `<@&${moderatorRole.id}>` : "Moderators";
+  const noticeHeadline = moderatorRole
+    ? `${mentionLabel} new reach-out update.`
+    : "Moderators, new reach-out update.";
+
+  let notifiedModerators = false;
+
+  if (MODERATOR_CHANNEL_ID && MODERATOR_CHANNEL_ID !== LUCIVER_LOG_CHANNEL_ID) {
+    try {
+      const moderatorChannel = await client.channels.fetch(MODERATOR_CHANNEL_ID);
+      if (moderatorChannel?.isTextBased()) {
+        await moderatorChannel.send({
+          content: noticeHeadline,
+          embeds: [embed],
+          allowedMentions
+        });
+        notifiedModerators = true;
+      }
+    } catch (error) {
+      console.error("Failed to post reach-out notice to moderator channel", error);
+    }
+  }
+
+  const logLines = [
+    noticeHeadline,
+    `• From: <@${message.author.id}>`,
+    `• Logged from: <#${message.channelId}>`,
+    `• Submitted: ${formatDateTime(submittedAt)}`,
+    `• Message Link: https://discord.com/channels/${message.guildId}/${message.channelId}/${message.id}`
+  ].join("\n");
+
+  await postLogEntry(logLines, {
+    embeds: [embed],
+    allowedMentions
+  });
+
+  const hasLogChannelConfigured = Boolean(LUCIVER_LOG_CHANNEL_ID);
+  await message.reply(
+    notifiedModerators || hasLogChannelConfigured
+      ? "Thanks for looping me in. I've shared this update with the moderators."
+      : "I couldn't find a configured moderator channel to broadcast this. Please double-check my settings."
+  );
+
+  return true;
+};
+
 const dispatchDailyRoleReminder = async () => {
   const normalizedRoleName = DAILY_REMINDER_ROLE_NAME.trim().toLowerCase();
   const targetedRoles = [];
@@ -1294,10 +1484,16 @@ const shareStats = async (message) => {
     ? `${formatDateTime(nextReminder.dueAt)} for ${describeReminderAudience(nextReminder, { memberActivity })}`
     : "None queued";
 
+  const lastReachOut = reachOutReports[reachOutReports.length - 1];
+  const reachOutSummary = reachOutReports.length
+    ? `Reach-out notices logged: **${reachOutReports.length}** (latest ${relativeTime(lastReachOut.submittedAt)})`
+    : "Reach-out notices logged: **0**";
+
   const operationsLines = [
     `Open assignments: **${openTasks.length}**`,
     `Pending reminders (<24h): **${dueSoonReminders.length}**`,
-    `Next reminder: ${nextReminderLabel}`
+    `Next reminder: ${nextReminderLabel}`,
+    reachOutSummary
   ].join("\n");
 
   const embed = new EmbedBuilder()
@@ -1364,10 +1560,7 @@ const handleLuciverCue = async (message, rawContent) => {
     }
   }
 
-  await message.reply({
-    embeds: [buildHelpEmbed()]
-  });
-  return true;
+  return false;
 };
 
 const deliverReminder = async (reminder) => {
@@ -1618,13 +1811,28 @@ client.on("messageCreate", async (message) => {
     return;
   }
 
-  if (await handleLuciverCue(message, rawContent)) {
+  if (await handleReachOutExcuse(message)) {
     return;
   }
 
   const normalized = rawContent.toLowerCase();
-  if (normalized === "hi" || normalized === "hello" || normalized === "luciver") {
-    await message.reply(greetingResponse);
+
+  if (isGreetingMessage(message)) {
+    await message.reply(greetingIntroResponse);
+    return;
+  }
+
+  const nameMentioned = message.mentions.has(client.user) || normalized.includes("luciver");
+  if (nameMentioned && isPlainNamePing(message)) {
+    await message.reply(namePingResponse);
+    return;
+  }
+
+  if (nameMentioned) {
+    const handled = await handleLuciverCue(message, rawContent);
+    if (handled) {
+      return;
+    }
   }
 });
 

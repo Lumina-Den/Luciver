@@ -11,6 +11,7 @@ Luciver is the Discord concierge for the Lumina dev server. It reacts to natural
 | `luciver assign @user <task>` | Luciver assign @Nova finish responsive tweaks | (Moderators only) logs the task, posts the record in #luciver-log, and queues it for the Sunday digest. |
 | `luciver remind me/<@user>/<@&role>/@everyone <note + time>` | Luciver remind @everyone prep release notes at 17:00 | Handles phrases like `in 20m`, `tomorrow 5pm`, `at 4:40am`, or `17 Dec 09:00`, schedules the reminder, confirms the ETA, and logs the entry for audit (defaults to 09:00 if you omit a time). Group targets fan out to direct messages for every member. |
 | `luciver stats` (also `status`, `pulse`) | Luciver stats | Summarises total traffic, top channels, top contributors, quiet channels, operations snapshot (tasks + reminders), and the Moderator / Others headcount. |
+| `@Luciver` inside `reach-out` | @Luciver I can't attend the 5 PM stand-up because of a client call. | Records the excuse, posts a reach-out notice (with moderator @mention + embed) into the configured moderator/log channels, and stores the excerpt for later stats. |
 | *(any other message that includes the name)* | Luciver what can you do? | Falls back to the help embed so the user sees available actions. |
 
 > Tip: Mentioning the bot (`@Luciver help`) behaves the same as typing its name.
@@ -25,6 +26,7 @@ Luciver is the Discord concierge for the Lumina dev server. It reacts to natural
 - **Weekend pulse** – Each Sunday at 6 PM (configured timezone) posts the top-channel activity snapshot and current headcounts in #luciver-log for quick review.
 - **Logging** – Every task creation, reminder creation, reminder delivery, and digest is echoed into the #luciver-log channel.
 - **Voice session tracking** – Watches the `Voice Meeting` and `weekly-bash-discussion` voice channels, captures join durations, and posts attendance summaries to #luciver-log once the room clears out.
+- **Reach-out tracking** – Any post in the configured `reach-out` channel that tags Luciver is sanitised, embedded, pushed to the moderator/log channels with a moderator role mention, acknowledged in-thread, and counted in the stats operations snapshot so moderators can monitor absences and excuses.
 - **Insights layer** – Tracks per-channel and per-member message volume so `stats` calls can highlight top contributors, quiet channels, and pending operational items alongside role headcounts.
 - **Startup health** – Logs `Luciver is online as ...` once the client connects so you know it is live.
 
@@ -35,12 +37,14 @@ Luciver is the Discord concierge for the Lumina dev server. It reacts to natural
 - **Local timezone** – Luciver defaults to Indian Standard Time (`Asia/Kolkata`). Provide `LUCIVER_TIMEZONE` (IANA format such as `America/New_York`) if you need a different zone so reminders, logs, and weekly reports render dates in your expected locale.
 - **Moderator channel** – Provide `MODERATOR_CHANNEL_ID` in `.env` to enable weekly digests; leave empty to skip them.
 - **Task permissions** – Only members with a role containing “moderator” can assign tasks through Luciver.
+- **Reach-out channel name** – Override `REACH_OUT_CHANNEL_NAME` (defaults to `reach-out`) if your server uses a different channel slug for excuse submissions.
 
 ## Internal Stores
 
 - `taskBacklog` – Array of open assignments (`status`, `lastNotifiedAt`, timestamps).
 - `reminderQueue` – Array of reminders awaiting delivery plus timestamps and delivery outcomes.
 - `channelActivity` – Map keyed by channel ID tracking counts and last active timestamps.
+- `reachOutReports` – Rolling list (500 max) of reach-out notices with excerpts and timestamps for moderator insights and stats output.
 
 ## File Of Record
 
@@ -65,3 +69,4 @@ Luciver is the Discord concierge for the Lumina dev server. It reacts to natural
 - `MODERATOR_CHANNEL_ID` – Channel used for the weekly digest (optional).
 - `LUCIVER_LOG_CHANNEL_ID` – Channel that receives task/reminder logs (optional but recommended).
 - `LUCIVER_TIMEZONE` – IANA timezone identifier (e.g. `Europe/London`) applied to reminder scheduling, digests, and log timestamps (defaults to `Asia/Kolkata`).
+- `REACH_OUT_CHANNEL_NAME` – Lowercase name of the channel that collects excuse posts; defaults to `reach-out` if unset.
