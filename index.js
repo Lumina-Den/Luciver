@@ -34,6 +34,7 @@ const memberActivity = new Map();
 const taskBacklog = [];
 const reminderQueue = [];
 const reachOutReports = [];
+const MOD_DELETE_MAX_MESSAGES = 20;
 
 const DAILY_REMINDER_ROLE_NAME = "bashers";
 const DAILY_REMINDER_HOUR = 20; // 8 PM
@@ -218,6 +219,15 @@ const buildHelpEmbed = () => {
         inline: false
       },
       {
+        name: "Clear Recent Messages (mods)",
+        value: formatHelpField(
+          "Luciver delete/remove the above <N> messages",
+          "Luciver delete the above 3 messages",
+          "Removes up to 20 recent, unpinned messages in this channel so moderators can tidy sensitive threads quickly."
+        ),
+        inline: false
+      },
+      {
         name: "Set a Reminder",
         value: formatHelpField(
           "Luciver remind me/@user/@everyone note in <time>",
@@ -257,7 +267,7 @@ const buildHelpEmbed = () => {
     .setFooter({ text: "Need something custom? Say my name and describe it." });
 };
 
-const hasAssignPermission = (message) => {
+const hasModeratorPrivileges = (message) => {
   if (!message.guild || !message.member) {
     return false;
   }
@@ -667,13 +677,116 @@ const sendChannelPing = async (message, rawContent) => {
   return true;
 };
 
+const handleModeratorBulkDelete = async (message, rawContent) => {
+  const match = rawContent.match(/\b(?:delete|remove)\s+(?:the\s+)?(?:above\s+)?(\d{1,3})\s+(?:msgs?|messages?)\b/i);
+  if (!match) {
+    return false;
+  }
+
+  if (!message.inGuild()) {
+    await message.reply("I can only clear messages inside a server channel.");
+    return true;
+  }
+
+  if (!message.channel?.isTextBased()) {
+    await message.reply("That channel doesn’t support bulk message removal.");
+    return true;
+  }
+
+  if (!hasModeratorPrivileges(message)) {
+    await message.reply("Only moderators can ask me to remove messages.");
+    return true;
+  }
+
+  const requestedCount = Number(match[1]);
+  if (!Number.isFinite(requestedCount) || requestedCount <= 0) {
+    await message.reply("Tell me how many messages to remove—use a positive number.");
+    return true;
+  }
+
+  if (requestedCount > MOD_DELETE_MAX_MESSAGES) {
+    await message.reply(`I can remove up to ${MOD_DELETE_MAX_MESSAGES} recent messages at once.`);
+    return true;
+  }
+
+  let fetched;
+  try {
+    fetched = await message.channel.messages.fetch({
+      limit: Math.min(requestedCount + 5, MOD_DELETE_MAX_MESSAGES + 5),
+      before: message.id
+    });
+  } catch (error) {
+    console.error("Failed to fetch messages for moderator delete", error);
+    await message.reply("I couldn't review the previous messages—try again in a moment.");
+    return true;
+  }
+
+  if (!fetched?.size) {
+    await message.reply("I couldn’t find any messages above yours to remove.");
+    return true;
+  }
+
+  const targets = [];
+  for (const msg of fetched.values()) {
+    if (msg.pinned) {
+      continue;
+    }
+    targets.push(msg);
+    if (targets.length === requestedCount) {
+      break;
+    }
+  }
+
+  if (!targets.length) {
+    await message.reply("Everything above is pinned or already gone—I didn’t remove anything.");
+    return true;
+  }
+
+  let deleted;
+  try {
+    deleted = await message.channel.bulkDelete(targets, true);
+  } catch (error) {
+    console.error("Failed to bulk delete messages", error);
+    await message.reply("I couldn’t remove those messages. They might be too old or I lack permission.");
+    return true;
+  }
+
+  const removedCount = deleted?.size ?? 0;
+  if (!removedCount) {
+    await message.reply("None of the messages were removed—most likely they’re older than 14 days.");
+    return true;
+  }
+
+  const remaining = requestedCount - removedCount;
+  const summary = remaining > 0
+    ? `Removed ${removedCount} message${removedCount === 1 ? "" : "s"}. ${remaining} couldn’t be removed (likely too old).`
+    : `Removed ${removedCount} message${removedCount === 1 ? "" : "s"}.`;
+
+  await message.reply(summary);
+
+  await postLogEntry(
+    [
+      "Moderator cleanup executed",
+      `• Channel: <#${message.channel.id}>`,
+      `• Requested by: <@${message.author.id}>`,
+      `• Attempted: ${requestedCount}`,
+      `• Removed: ${removedCount}`,
+      remaining > 0 ? `• Skipped: ${remaining}` : null,
+      `• Timestamp: ${formatDateTime(Date.now())}`
+    ].filter(Boolean).join("\n"),
+    { allowedMentions: { users: [message.author.id], roles: [] } }
+  );
+
+  return true;
+};
+
 const logTask = async (message, rawContent) => {
   const match = rawContent.match(/assign\s+<@!?(\d+)>\s+(?:to\s+)?(.+)/i);
   if (!match) {
     return false;
   }
 
-  if (!hasAssignPermission(message)) {
+  if (!hasModeratorPrivileges(message)) {
     await message.reply("Only moderators can assign tasks through me.");
     return true;
   }
@@ -1566,6 +1679,13 @@ const handleLuciverCue = async (message, rawContent) => {
 
   if (/\bping\b/.test(normalized) && message.guild) {
     const handled = await sendChannelPing(message, rawContent);
+    if (handled) {
+      return true;
+    }
+  }
+
+  if (/\b(delete|remove)\b/.test(normalized)) {
+    const handled = await handleModeratorBulkDelete(message, rawContent);
     if (handled) {
       return true;
     }
