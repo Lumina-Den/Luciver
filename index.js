@@ -1250,7 +1250,25 @@ const sanitizeNote = (text) => text
   .replace(/[\s,.;:-]+$/, "");
 
 const parseReminderSchedule = (text) => {
-  let working = text.trim();
+  const originalNoteRaw = typeof text === "string" ? text : "";
+  const trimmedInput = originalNoteRaw.trim();
+
+  let notePortion = trimmedInput;
+  let schedulePortion = trimmedInput;
+  let noteSeparated = false;
+
+  const lastCommaIndex = trimmedInput.lastIndexOf(",");
+  if (lastCommaIndex !== -1) {
+    const before = trimmedInput.slice(0, lastCommaIndex).trim();
+    const after = trimmedInput.slice(lastCommaIndex + 1).trim();
+    if (after) {
+      notePortion = before;
+      schedulePortion = after;
+      noteSeparated = true;
+    }
+  }
+
+  let working = schedulePortion;
   let scheduled = null;
   let defaultedTime = false;
   const nowZoned = DateTime.now().setZone(TARGET_TIMEZONE);
@@ -1383,19 +1401,28 @@ const parseReminderSchedule = (text) => {
     return { error: "I need a time—try `in 15m`, `in 2 hours`, or `at 14:30`." };
   }
 
-  const contentNote = sanitizeNote(working);
-  if (!contentNote) {
-    return { error: "Tell me what to remind you about after the time." };
-  }
+  if (noteSeparated) {
+    const noteCheckSeparated = sanitizeNote(notePortion);
+    if (!noteCheckSeparated) {
+      return { error: "Tell me what to remind you about after the time." };
+    }
+  } else {
+    const contentNote = sanitizeNote(working);
+    if (!contentNote) {
+      return { error: "Tell me what to remind you about after the time." };
+    }
 
-  const note = sanitizeNote(text);
-  if (!note) {
-    return { error: "Tell me what to remind you about after the time." };
+    const noteCheck = sanitizeNote(trimmedInput);
+    if (!noteCheck) {
+      return { error: "Tell me what to remind you about after the time." };
+    }
   }
 
   if (scheduled.toMillis() <= nowZoned.toMillis()) {
     return { error: "That time already passed—give me something in the future." };
   }
+
+  const note = noteSeparated ? notePortion : trimmedInput;
 
   return { note, dueAt: scheduled.toMillis(), defaultedTime };
 };
