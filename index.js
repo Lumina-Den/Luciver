@@ -1383,7 +1383,12 @@ const parseReminderSchedule = (text) => {
     return { error: "I need a time—try `in 15m`, `in 2 hours`, or `at 14:30`." };
   }
 
-  const note = sanitizeNote(working);
+  const contentNote = sanitizeNote(working);
+  if (!contentNote) {
+    return { error: "Tell me what to remind you about after the time." };
+  }
+
+  const note = sanitizeNote(text);
   if (!note) {
     return { error: "Tell me what to remind you about after the time." };
   }
