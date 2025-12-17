@@ -46,6 +46,12 @@ const DAILY_REMINDER_MESSAGE = "Uploaded today's progress?! If not, do it now!!"
 const MODERATOR_CHANNEL_ID = process.env.MODERATOR_CHANNEL_ID;
 const LUCIVER_LOG_CHANNEL_ID = process.env.LUCIVER_LOG_CHANNEL_ID;
 const TRACKED_VOICE_CHANNEL_NAMES = new Set(["voice meeting", "weekly-bash-discussion"]);
+const TRACKED_VOICE_CHANNEL_IDS = new Set(
+  (process.env.TRACKED_VOICE_CHANNEL_IDS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+);
 const REACH_OUT_CHANNEL_NAME = (process.env.REACH_OUT_CHANNEL_NAME || "reach-out").trim().toLowerCase();
 const REACH_OUT_MAX_RECORDS = 500;
 
@@ -428,11 +434,19 @@ const formatRoleSnapshot = (roleStats) => {
 const resolveVoiceChannelName = (channel) => channel?.name || `voice-${channel?.id ?? "unknown"}`;
 
 const isTrackedVoiceChannel = (channel) => {
-  if (!channel?.name) {
+  if (!channel) {
     return false;
   }
 
-  return TRACKED_VOICE_CHANNEL_NAMES.has(channel.name.trim().toLowerCase());
+  if (channel.id && TRACKED_VOICE_CHANNEL_IDS.has(channel.id)) {
+    return true;
+  }
+
+  if (channel.name) {
+    return TRACKED_VOICE_CHANNEL_NAMES.has(channel.name.trim().toLowerCase());
+  }
+
+  return false;
 };
 
 const ensureVoiceSession = (channel) => {
