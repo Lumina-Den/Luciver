@@ -1756,7 +1756,7 @@ const handleReachOutExcuse = async (message) => {
     return true;
   }
 
-  await message.reply("Thanks for looping me in. I've shared this update with the moderators only.");
+  await message.reply("Thanks for looping me in. I've shared this update with the moderators!!");
 
   return true;
 };
