@@ -51,6 +51,12 @@ const REACH_OUT_MAX_RECORDS = 500;
 
 const voiceSessions = new Map();
 
+// Voice session analytics (adjust via environment variables).
+const VOICE_SESSION_BASE_DURATION_MS = Math.max(0, Number.parseFloat(process.env.VOICE_SESSION_BASE_DURATION_MINUTES || "60")) * 60 * 1000;
+const VOICE_SESSION_MIN_LOG_DURATION_MS = Math.max(0, Number.parseFloat(process.env.VOICE_SESSION_MIN_LOG_DURATION_MINUTES || "5")) * 60 * 1000;
+const VOICE_SESSION_FULL_ATTENDANCE_THRESHOLD = Math.min(1, Math.max(0, Number.parseFloat(process.env.VOICE_SESSION_FULL_ATTENDANCE_THRESHOLD || "0.95")));
+const VOICE_SESSION_ON_TIME_THRESHOLD = Math.min(1, Math.max(0, Number.parseFloat(process.env.VOICE_SESSION_ON_TIME_THRESHOLD || "0.75")));
+
 const TARGET_TIMEZONE = process.env.LUCIVER_TIMEZONE || "Asia/Kolkata";
 
 const REMINDER_CHECK_INTERVAL_MS = 30 * 1000;
@@ -180,6 +186,62 @@ const formatDuration = (milliseconds) => {
   }
 
   return segments.join(" ");
+};
+
+const formatPercentageValue = (value) => {
+  if (!Number.isFinite(value)) {
+    return "0%";
+  }
+
+  const percentage = Math.round(value * 100);
+  return `${percentage}%`;
+};
+
+const formatJoinOffsetBadge = (offsetMs) => {
+  if (!Number.isFinite(offsetMs)) {
+    return null;
+  }
+
+  if (offsetMs <= 60_000) {
+    return "on-time";
+  }
+
+  const minutes = Math.round(offsetMs / 60_000);
+  if (minutes < 60) {
+    return `+${minutes}m`;
+  }
+
+  const hours = Math.round(offsetMs / 3_600_000);
+  return `+${hours}h`;
+};
+
+// Splits attendance reports into chunks that stay below Discord's embed length limits.
+const chunkLinesByLength = (lines, maxLength = 3500) => {
+  if (!Array.isArray(lines) || !lines.length) {
+    return [];
+  }
+
+  const chunks = [];
+  let current = [];
+  let currentLength = 0;
+
+  lines.forEach((line) => {
+    const lineLength = line.length;
+    if (currentLength + lineLength + 1 > maxLength && current.length) {
+      chunks.push(current.join("\n"));
+      current = [];
+      currentLength = 0;
+    }
+
+    current.push(line);
+    currentLength += lineLength + 1;
+  });
+
+  if (current.length) {
+    chunks.push(current.join("\n"));
+  }
+
+  return chunks;
 };
 
 const formatHelpField = (command, example, description) => {
@@ -385,7 +447,8 @@ const ensureVoiceSession = (channel) => {
       channelName: resolveVoiceChannelName(channel),
       startedAt: Date.now(),
       participants: new Map(),
-      activeCount: 0
+      activeCount: 0,
+      peakCount: 0
     };
     voiceSessions.set(channel.id, session);
   }
@@ -422,16 +485,21 @@ const markParticipantJoin = (session, voiceState) => {
       userId,
       displayName,
       totalMs: 0,
-      lastJoinAt: null
+      lastJoinAt: null,
+      firstJoinAt: now
     };
     session.participants.set(userId, participant);
   } else {
     participant.displayName = displayName;
+    if (participant.firstJoinAt == null) {
+      participant.firstJoinAt = now;
+    }
   }
 
   if (participant.lastJoinAt == null) {
     participant.lastJoinAt = now;
     session.activeCount += 1;
+    session.peakCount = Math.max(session.peakCount, session.activeCount);
   }
 };
 
@@ -470,32 +538,161 @@ const finalizeVoiceSession = async (channelId) => {
   });
 
   const durationMs = Math.max(0, now - session.startedAt);
-  const participants = [...session.participants.values()].filter((participant) => participant.totalMs > 0);
-  const participantCount = participants.length;
+  const baseDurationMs = VOICE_SESSION_BASE_DURATION_MS || durationMs;
 
-  const header = `Voice session • ${session.channelName}`;
-  const lines = [
-    header,
-    `• Duration: ${formatDuration(durationMs)} (${formatDateTime(session.startedAt)} → ${formatDateTime(now)})`,
-    `• Attendance: ${participantCount} member${participantCount === 1 ? "" : "s"}`
-  ];
-
-  if (participants.length) {
-    lines.push("• Participants:");
-    participants
-      .sort((a, b) => b.totalMs - a.totalMs)
-      .forEach((participant) => {
-        lines.push(`  - <@${participant.userId}> — ${formatDuration(participant.totalMs)} (${participant.displayName})`);
-      });
-  } else {
-    lines.push("• Participants: none recorded.");
+  if (durationMs < VOICE_SESSION_MIN_LOG_DURATION_MS && VOICE_SESSION_MIN_LOG_DURATION_MS > 0) {
+    await postLogEntry(
+      `Voice session summary skipped — <#${session.channelId}> wrapped in ${formatDuration(durationMs)}, below the ${formatDuration(VOICE_SESSION_MIN_LOG_DURATION_MS)} minimum window.`,
+      { allowedMentions: { users: [], roles: [] } }
+    );
+    voiceSessions.delete(channelId);
+    return;
   }
 
-  await postLogEntry(lines.join("\n"), {
-    allowedMentions: {
-      users: participants.map((participant) => participant.userId),
-      roles: []
-    }
+  const participantsRaw = [...session.participants.values()].filter((participant) => participant.totalMs > 0);
+  const participantCount = participantsRaw.length;
+
+  if (!participantCount) {
+    voiceSessions.delete(channelId);
+    return;
+  }
+
+  const totalAttendanceMs = participantsRaw.reduce((sum, participant) => sum + participant.totalMs, 0);
+  const averageConcurrent = durationMs > 0 ? totalAttendanceMs / durationMs : 0;
+  const averageConcurrentLabel = averageConcurrent ? averageConcurrent.toFixed(1).replace(/\.0$/, "") : "0";
+  const overtimeMs = Math.max(0, durationMs - baseDurationMs);
+  const peakConcurrent = Math.max(session.peakCount || 0, participantCount);
+
+  const participants = participantsRaw
+    .map((participant) => {
+      const attendanceFraction = durationMs > 0 ? Math.min(1, participant.totalMs / durationMs) : 0;
+      const joinOffset = Number.isFinite(participant.firstJoinAt)
+        ? Math.max(0, participant.firstJoinAt - session.startedAt)
+        : null;
+      const badges = [];
+
+      if (attendanceFraction >= VOICE_SESSION_FULL_ATTENDANCE_THRESHOLD) {
+        badges.push("full");
+      } else if (attendanceFraction >= VOICE_SESSION_ON_TIME_THRESHOLD) {
+        badges.push("steady");
+      }
+
+      if (baseDurationMs > 0 && participant.totalMs >= baseDurationMs) {
+        badges.push("overtime");
+      }
+
+      const offsetBadge = formatJoinOffsetBadge(joinOffset);
+      if (offsetBadge) {
+        badges.push(offsetBadge);
+      }
+
+      return {
+        ...participant,
+        attendanceFraction,
+        joinOffset,
+        badges
+      };
+    })
+    .sort((a, b) => b.totalMs - a.totalMs);
+
+  const fullAttendanceCount = participants.filter(
+    (participant) => participant.attendanceFraction >= VOICE_SESSION_FULL_ATTENDANCE_THRESHOLD
+  ).length;
+  const steadyAttendanceCount = participants.filter(
+    (participant) => participant.attendanceFraction >= VOICE_SESSION_ON_TIME_THRESHOLD
+  ).length;
+
+  const leaders = participants.slice(0, Math.min(3, participants.length));
+  const firstArrivals = participants
+    .filter((participant) => Number.isFinite(participant.joinOffset))
+    .slice()
+    .sort((a, b) => (a.joinOffset ?? Infinity) - (b.joinOffset ?? Infinity))
+    .slice(0, Math.min(3, participants.length));
+
+  const rankWidth = String(participants.length).length;
+  const attendanceLines = participants.map((participant, index) => {
+    const rankLabel = String(index + 1).padStart(rankWidth, " ");
+    const percentLabel = formatPercentageValue(participant.attendanceFraction);
+    const badgeText = participant.badges.length
+      ? ` ${participant.badges.map((badge) => `[${badge}]`).join("")}`
+      : "";
+    return `${rankLabel}. <@${participant.userId}> — ${formatDuration(participant.totalMs)} (${percentLabel})${badgeText}`;
+  });
+
+  const attendanceChunks = chunkLinesByLength(attendanceLines);
+  const leaderboardLines = leaders.map((participant, index) => {
+    const percentLabel = formatPercentageValue(participant.attendanceFraction);
+    return `${index + 1}. <@${participant.userId}> — ${formatDuration(participant.totalMs)} (${percentLabel})`;
+  });
+
+  const firstArrivalLines = firstArrivals.map((participant) => {
+    const offsetLabel = formatJoinOffsetBadge(participant.joinOffset);
+    const displayLabel = offsetLabel || "on-time";
+    return `<@${participant.userId}> ${displayLabel}`;
+  });
+
+  const badgeLegend = [
+    `[full]=≥${formatPercentageValue(VOICE_SESSION_FULL_ATTENDANCE_THRESHOLD)} of session`,
+    `[steady]=≥${formatPercentageValue(VOICE_SESSION_ON_TIME_THRESHOLD)} of session`,
+    `[overtime]=beyond ${formatDuration(baseDurationMs)}`,
+    `[on-time]/[+Xm]=arrival offset`
+  ].join(" • ");
+
+  const summaryEmbed = new EmbedBuilder()
+    .setColor(0x2563eb)
+    .setTitle("Voice Session Summary")
+    .setDescription(`<#${session.channelId}> • ${session.channelName}`)
+    .addFields(
+      {
+        name: "Duration",
+        value: `${formatDuration(durationMs)} (${formatDateTime(session.startedAt)} → ${formatDateTime(now)})`,
+        inline: false
+      },
+      {
+        name: "Attendance",
+        value: `${participantCount} unique • avg concurrent ${averageConcurrentLabel} • peak ${peakConcurrent}`,
+        inline: false
+      },
+      {
+        name: "Consistency",
+        value: `${fullAttendanceCount} full (${formatPercentageValue(VOICE_SESSION_FULL_ATTENDANCE_THRESHOLD)}+) • ${steadyAttendanceCount} steady (${formatPercentageValue(VOICE_SESSION_ON_TIME_THRESHOLD)}+)`,
+        inline: false
+      },
+      {
+        name: "Overtime",
+        value: overtimeMs > 0
+          ? `${formatDuration(overtimeMs)} beyond ${formatDuration(baseDurationMs)}`
+          : `Within ${formatDuration(baseDurationMs)}`,
+        inline: false
+      }
+    );
+
+  if (leaderboardLines.length) {
+    summaryEmbed.addFields({ name: "Top Presence", value: leaderboardLines.join("\n"), inline: false });
+  }
+
+  if (firstArrivalLines.length) {
+    summaryEmbed.addFields({ name: "First In", value: firstArrivalLines.join("\n"), inline: false });
+  }
+
+  summaryEmbed.addFields({ name: "Badge Legend", value: badgeLegend, inline: false });
+
+  const rosterEmbeds = attendanceChunks.map((chunk, index) => {
+    const embed = new EmbedBuilder().setColor(0x1d4ed8).setDescription(chunk);
+    const totalChunks = attendanceChunks.length;
+    const title = totalChunks > 1 ? `Attendance Roster (${index + 1}/${totalChunks})` : "Attendance Roster";
+    embed.setTitle(title);
+    return embed;
+  });
+
+  const allowedMentions = {
+    users: participants.map((participant) => participant.userId),
+    roles: []
+  };
+
+  await postLogEntry(`Voice session report — <#${session.channelId}>`, {
+    embeds: [summaryEmbed, ...rosterEmbeds],
+    allowedMentions
   });
 
   voiceSessions.delete(channelId);
