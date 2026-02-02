@@ -19,15 +19,12 @@ client.once("ready", () => {
 });
 
 const greetingIntroResponse = [
-  "Hey! I'm Luciver, the server concierge keeping schedules tidy and updates flowing.",
-  "\nCode of conduct quick hits:",
-  "- Keep conversations respectful and on-topic for each channel.",
-  "- Spin up deeper dives in focused channels so threads stay tidy.",
-  "- Flag anything off-track early so moderators can help out.",
-  "\nNeed anything from me? Just say `Luciver help` or tell me what you need."
+  "Heya! I'm Luciver - the automation bot keeping things moving.",
+  "Say `Luciver help` to see my full command list or just tell me the job and I'll tee it up.",
+  "Reminders, pings, cleanups, attendance recaps - point me at it and I'll handle the rest."
 ].join("\n");
 
-const namePingResponse = "You mentioned my name—how can I help?";
+const namePingResponse = "You mentioned my name - how can I help?";
 
 const channelActivity = new Map();
 const memberActivity = new Map();
@@ -140,7 +137,23 @@ const isGreetingMessage = (message) => {
     return false;
   }
 
-  return /^(hey|hi|hello)(\s+luciver)?$/i.test(normalized);
+  const pieces = normalized.split(" ");
+  if (!pieces.includes("luciver")) {
+    return false;
+  }
+
+  const remaining = pieces.filter((piece) => piece && piece !== "luciver");
+  if (!remaining.length) {
+    return true;
+  }
+
+  const greetingWords = new Set(["hi", "hello", "hey"]);
+  const alphaTokens = remaining.filter((piece) => /^[a-z]+$/.test(piece));
+  if (!alphaTokens.length) {
+    return true;
+  }
+
+  return alphaTokens.length === remaining.length && alphaTokens.every((token) => greetingWords.has(token));
 };
 
 const isPlainNamePing = (message) => {
