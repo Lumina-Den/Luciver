@@ -19,9 +19,9 @@ client.once("ready", () => {
 });
 
 const greetingIntroResponse = [
-  "Heya! I'm Luciver - the automation bot keeping things moving.",
-  "Say `Luciver help` to see my full command list or just tell me the job and I'll tee it up.",
-  "Reminders, pings, cleanups, attendance recaps - point me at it and I'll handle the rest."
+  "Hey there! I'm Luciver - your automation bot on call.",
+  "Need backup? Say `Luciver help` for my command list or spell out the task with my name and I'll take it.",
+  "Reminders, forwarding, cleanup, attendance recaps - point me at it and I'll keep things moving."
 ].join("\n");
 
 const namePingResponse = "You mentioned my name - how can I help?";
@@ -133,27 +133,27 @@ const normalizeForNameChecks = (text, botId) => {
 const isGreetingMessage = (message) => {
   const botId = client.user?.id || null;
   const normalized = normalizeForNameChecks(message.content, botId);
-  if (!normalized) {
+  if (!normalized || !normalized.includes("luciver")) {
     return false;
   }
 
-  const pieces = normalized.split(" ");
-  if (!pieces.includes("luciver")) {
+  const tokens = normalized.split(" ").filter(Boolean);
+  if (!tokens.includes("luciver")) {
     return false;
-  }
-
-  const remaining = pieces.filter((piece) => piece && piece !== "luciver");
-  if (!remaining.length) {
-    return true;
   }
 
   const greetingWords = new Set(["hi", "hello", "hey"]);
-  const alphaTokens = remaining.filter((piece) => /^[a-z]+$/.test(piece));
+  const alphaTokens = tokens.filter((token) => /^[a-z]+$/.test(token) && token !== "luciver");
   if (!alphaTokens.length) {
     return true;
   }
 
-  return alphaTokens.length === remaining.length && alphaTokens.every((token) => greetingWords.has(token));
+  const hasGreeting = alphaTokens.some((token) => greetingWords.has(token));
+  if (!hasGreeting) {
+    return tokens.every((token) => token === "luciver");
+  }
+
+  return alphaTokens.every((token) => greetingWords.has(token));
 };
 
 const isPlainNamePing = (message) => {
